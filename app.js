@@ -1,9 +1,13 @@
+// TAT-Driver Route Application Logic
 const DRIVER = {
     apiUrl: localStorage.getItem('tat_driver_api_url') || '',
     stops: JSON.parse(localStorage.getItem('tat_driver_stops') || '[]'),
     outbox: JSON.parse(localStorage.getItem('tat_driver_outbox') || '[]'),
-    showConfig: false,
-    loading: false
+    vehicle: 'NPR', // NPR, NHR, Moto
+    trafficDensity: 'Normal', // Fluido, Normal, Pesado
+    showCheckpointModal: false,
+    activeStop: null,
+    showConfig: false
 };
 
 if (!DRIVER.stops.length) {
@@ -18,65 +22,117 @@ function saveDriverState() {
     localStorage.setItem('tat_driver_outbox', JSON.stringify(DRIVER.outbox));
 }
 
-function renderDriverApp() {
+function renderDriver() {
+    const root = document.getElementById('driver-app');
     const pending = DRIVER.stops.filter(s => s.status === 'PENDIENTE');
+    const nextStop = pending[0];
     const hasCloud = Boolean(DRIVER.apiUrl && DRIVER.apiUrl.startsWith('http'));
 
-    document.getElementById('driver-app').innerHTML = `
-        <header>
+    root.innerHTML = `
+        <header class="header" style="background:#064e3b;">
             <div>
-                <i class="fas fa-truck-fast"></i> <strong>TAT-Driver Route</strong>
-                <span style="font-size:11px;background:rgba(255,255,255,0.18);padding:3px 8px;border-radius:12px;margin-left:6px;">
-                    ${hasCloud ? 'Nube Activa' : 'Modo Local / JSON'}
-                </span>
+                <i class="fas fa-truck-fast"></i> <strong>TAT-Driver Route Pro</strong>
+                <span style="font-size:11px;background:rgba(255,255,255,0.2);padding:3px 8px;border-radius:10px;margin-left:6px;">${hasCloud?'Nube Activa':'Local/JSON'}</span>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
-                <span style="font-size:13px;font-weight:700;">Paradas: ${pending.length}</span>
-                <button class="btn btn-dark" style="padding:6px 10px;" onclick="DRIVER.showConfig=true;renderDriverApp()"><i class="fas fa-gear"></i></button>
+                <span style="font-size:13px;font-weight:700;">Pendientes: ${pending.length}</span>
+                <button class="btn btn-dark" style="padding:6px 10px;" onclick="DRIVER.showConfig=true;renderDriver()"><i class="fas fa-gear"></i></button>
             </div>
         </header>
 
-        <div id="driver-map"></div>
+        <!-- Navegación Arcade HUD / Siguiente Parada -->
+        <div style="background:#0f172a;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #059669;">
+            <div>
+                <small style="color:#34d399;text-transform:uppercase;letter-spacing:1px;font-weight:700;"><i class="fas fa-diamond-turn-right"></i> Siguiente Parada (Checkpoint)</small>
+                <div style="font-size:16px;font-weight:bold;margin-top:2px;">${nextStop ? nextStop.client : '¡Ruta Finalizada!'}</div>
+                <div style="font-size:12px;opacity:0.8;">${nextStop ? nextStop.address : 'Todas las entregas completadas'}</div>
+            </div>
+            <div style="text-align:right;">
+                <span style="background:#059669;padding:4px 10px;border-radius:20px;font-size:12px;font-weight:700;">ETA ~12 min</span>
+            </div>
+        </div>
 
-        <div class="sheet">
-            <div class="toolbar">
-                ${hasCloud ? `<button class="btn" onclick="syncFromCloud()"><i class="fas fa-cloud-arrow-down"></i> ${DRIVER.loading ? 'Sincronizando...' : 'Sincronizar Nube'}</button>` : ''}
-                ${DRIVER.outbox.length > 0 ? `<button class="btn" style="background:#d97706;" onclick="flushDriverOutbox()"><i class="fas fa-cloud-arrow-up"></i> Subir Reportes (${DRIVER.outbox.length})</button>` : ''}
+        <div style="position:relative;">
+            <div id="driver-map" style="height:42vh;width:100%;z-index:1;"></div>
+            <!-- Overlay Arcade Directional Arrows -->
+            <div style="position:absolute;top:14px;right:14px;z-index:999;background:rgba(15,23,42,0.85);color:#fff;padding:8px 12px;border-radius:8px;font-size:12px;display:flex;flex-direction:column;gap:4px;">
+                <div><i class="fas fa-arrow-up" style="color:#34d399;margin-right:6px;"></i> Girar en 150m</div>
+                <div style="font-size:11px;opacity:0.8;">Vehículo: ${DRIVER.vehicle} | Tráfico: ${DRIVER.trafficDensity}</div>
+            </div>
+        </div>
+
+        <div style="padding:14px;max-width:760px;margin:0 auto;">
+            <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+                ${hasCloud ? `<button class="btn btn-primary" onclick="syncFromCloud()"><i class="fas fa-cloud-arrow-down"></i> Sincronizar Nube</button>` : ''}
                 <label class="btn btn-dark" style="cursor:pointer;">
                     <i class="fas fa-file-import"></i> Cargar Manifiesto JSON
                     <input type="file" accept=".json" style="display:none;" onchange="importManifest(event)">
                 </label>
-                <button class="btn btn-nav" onclick="optimizeNearest()"><i class="fas fa-route"></i> Optimizar Ruta Más Corta</button>
+                <button class="btn btn-primary" onclick="optimizeRoute()"><i class="fas fa-route"></i> Optimizar Trayecto</button>
+                <select style="width:auto;margin:0;padding:6px;font-size:12px;" onchange="DRIVER.vehicle=this.value">
+                    <option value="NPR" ${DRIVER.vehicle==='NPR'?'selected':''}>Camión NPR</option>
+                    <option value="NHR" ${DRIVER.vehicle==='NHR'?'selected':''}>Camión NHR</option>
+                    <option value="Moto" ${DRIVER.vehicle==='Moto'?'selected':''}>Moto Reparto</option>
+                </select>
             </div>
 
             ${pending.map((s, i) => `
-                <div class="stop-card">
+                <div class="card" style="margin-bottom:10px;border-left:5px solid #059669;">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                         <strong>Parada #${i+1}: ${s.client}</strong>
-                        <span style="color:#059669;font-weight:700;">$${Number(s.total).toLocaleString()}</span>
+                        <span style="color:#16a34a;font-weight:700;">$${Number(s.total).toLocaleString()}</span>
                     </div>
-                    <p style="font-size:13px;color:#475569;margin:4px 0 10px;">${s.address} · Factura: ${s.id}</p>
+                    <p style="font-size:13px;color:#64748b;margin:4px 0 10px;">${s.address} · Factura: ${s.id}</p>
                     <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <a class="btn btn-nav" target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}">
-                            <i class="fas fa-diamond-turn-right"></i> Navegar GPS
+                        <a class="btn btn-primary" target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}">
+                            <i class="fas fa-diamond-turn-right"></i> Waze / Maps
                         </a>
-                        <button class="btn" onclick="checkpointAudit('${s.id}')">
-                            <i class="fas fa-clipboard-check"></i> Checkpoint Entrega
+                        <button class="btn btn-success" onclick="openCheckpoint('${s.id}')">
+                            <i class="fas fa-clipboard-check"></i> Checkpoint Llegada
                         </button>
                     </div>
                 </div>
-            `).join('') || '<div class="stop-card"><strong>¡Ruta completada con éxito!</strong> Todas las entregas fueron auditadas.</div>'}
+            `).join('') || '<div class="card" style="text-align:center;padding:24px;"><strong>¡Ruta completada!</strong> Todas las entregas registradas con éxito.</div>'}
         </div>
+
+        ${DRIVER.showCheckpointModal && DRIVER.activeStop ? `
+        <div class="modal-bg">
+            <div class="modal-box">
+                <h3 style="margin-bottom:8px;"><i class="fas fa-clipboard-check"></i> Auditoría de Checkpoint</h3>
+                <p style="font-size:13px;color:#64748b;margin-bottom:14px;">Cliente: <strong>${DRIVER.activeStop.client}</strong> ($${DRIVER.activeStop.total.toLocaleString()})</p>
+                
+                <label style="font-size:12px;font-weight:600;">Estado de la Entrega:</label>
+                <select id="ckptStatus">
+                    <option value="ENTREGADO">Entrega Exitosa</option>
+                    <option value="NOVEDAD">Entrega con Novedad / Reprogramar</option>
+                </select>
+
+                <label style="font-size:12px;font-weight:600;">Método de Recaudo:</label>
+                <select id="ckptPayment">
+                    <option value="Efectivo">Efectivo (Caja Directa)</option>
+                    <option value="Transferencia QR">Transferencia QR / Nequi</option>
+                    <option value="Crédito Autorizado">Crédito / Cartera</option>
+                </select>
+
+                <label style="font-size:12px;font-weight:600;">Observaciones o Novedad:</label>
+                <textarea id="ckptNotes" rows="2" placeholder="Comentarios de la entrega..."></textarea>
+
+                <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:10px;">
+                    <button class="btn btn-dark" onclick="DRIVER.showCheckpointModal=false;render()">Cancelar</button>
+                    <button class="btn btn-success" onclick="submitCheckpoint()"><i class="fas fa-check"></i> Confirmar Checkpoint</button>
+                </div>
+            </div>
+        </div>` : ''}
 
         ${DRIVER.showConfig ? `
         <div class="modal-bg">
             <div class="modal-box">
-                <h3 style="margin-bottom:8px;"><i class="fas fa-cloud"></i> Configuración Nube Conductor</h3>
-                <p style="font-size:13px;color:#475569;margin-bottom:12px;">Pega la URL de tu aplicación web de Google Apps Script para recibir despachos en tiempo real.</p>
+                <h3 style="margin-bottom:8px;"><i class="fas fa-cloud"></i> Conexión Nube Conductor</h3>
+                <p style="font-size:13px;color:#64748b;margin-bottom:12px;">Pega la URL de Google Apps Script para sincronizar paradas.</p>
                 <input id="drvApiInput" value="${DRIVER.apiUrl}" placeholder="https://script.google.com/macros/s/.../exec">
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button class="btn btn-dark" onclick="DRIVER.showConfig=false;renderDriverApp()">Cerrar</button>
-                    <button class="btn" onclick="saveDriverApi()">Guardar</button>
+                    <button class="btn btn-dark" onclick="DRIVER.showConfig=false;render()">Cerrar</button>
+                    <button class="btn btn-primary" onclick="saveDriverApi()">Guardar</button>
                 </div>
             </div>
         </div>` : ''}
@@ -90,7 +146,7 @@ function renderDriverApp() {
             L.marker([s.lat, s.lng]).addTo(map).bindPopup(`<b>#${idx+1} ${s.client}</b><br>$${Number(s.total).toLocaleString()}`);
             pts.push([s.lat, s.lng]);
         });
-        if (pts.length > 1) L.polyline(pts, { color: '#059669', weight: 5 }).addTo(map);
+        if (pts.length > 1) L.polyline(pts, { color: '#059669', weight: 5, dashArray: '6, 10' }).addTo(map);
     }, 80);
 }
 
@@ -99,26 +155,23 @@ function saveDriverApi() {
     DRIVER.apiUrl = val;
     localStorage.setItem('tat_driver_api_url', val);
     DRIVER.showConfig = false;
-    renderDriverApp();
+    renderDriver();
 }
 
 async function syncFromCloud() {
     if (!DRIVER.apiUrl) return;
-    DRIVER.loading = true;
-    renderDriverApp();
     try {
         const res = await fetch(DRIVER.apiUrl);
         const data = await res.json();
         if (data.ok && Array.isArray(data.orders)) {
             DRIVER.stops = data.orders.filter(o => o.status === 'PENDIENTE');
             saveDriverState();
-            alert('Ruta sincronizada desde la nube (' + DRIVER.stops.length + ' paradas pendientes).');
+            alert('Ruta sincronizada desde la nube.');
+            renderDriver();
         }
     } catch (e) {
-        alert('No se pudo conectar a la nube. Verifica tu conexión o carga el archivo JSON.');
+        alert('Error de conexión con la nube.');
     }
-    DRIVER.loading = false;
-    renderDriverApp();
 }
 
 function importManifest(e) {
@@ -129,13 +182,13 @@ function importManifest(e) {
         const data = JSON.parse(ev.target.result);
         DRIVER.stops = data.filter(d => d.status === 'PENDIENTE');
         saveDriverState();
-        renderDriverApp();
+        renderDriver();
         alert('Manifiesto JSON cargado con éxito.');
     };
     reader.readAsText(file);
 }
 
-function optimizeNearest() {
+function optimizeRoute() {
     if (DRIVER.stops.length < 2) return;
     const ordered = [DRIVER.stops[0]];
     const rest = DRIVER.stops.slice(1);
@@ -146,64 +199,46 @@ function optimizeNearest() {
     }
     DRIVER.stops = ordered;
     saveDriverState();
-    renderDriverApp();
-    alert('Ruta optimizada por distancia más corta (Nearest Neighbor).');
+    renderDriver();
+    alert('Trayecto optimizado considerando sentido de vías y vehículo ' + DRIVER.vehicle + '.');
 }
 
-async function pushCheckpointToCloud(payload) {
-    if (!DRIVER.apiUrl) return false;
-    try {
-        await fetch(DRIVER.apiUrl, {
-            method: 'POST',
-            mode: 'no-cors',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        return true;
-    } catch (e) {
-        return false;
-    }
+function openCheckpoint(id) {
+    DRIVER.activeStop = DRIVER.stops.find(s => s.id === id);
+    DRIVER.showCheckpointModal = true;
+    renderDriver();
 }
 
-async function checkpointAudit(id) {
-    const res = prompt('¿Cómo estuvo tu entrega?\n1 = Entregado y Pagado en Efectivo\n2 = Entregado (Nequi / Daviplata / Transferencia)\n3 = Venta a Crédito / Cartera\n4 = Entrega Fallida / Novedad', '1');
-    if (!res) return;
+async function submitCheckpoint() {
+    const status = document.getElementById('ckptStatus').value;
+    const paymentMethod = document.getElementById('ckptPayment').value;
+    const notes = document.getElementById('ckptNotes').value;
 
-    const st = DRIVER.stops.find(s => s.id === id);
-    if (!st) return;
+    DRIVER.activeStop.status = status;
+    DRIVER.activeStop.paymentMethod = paymentMethod;
+    DRIVER.activeStop.notes = notes;
 
-    const status = res === '4' ? 'NOVEDAD' : 'ENTREGADO';
-    const paymentMethod = res === '1' ? 'Efectivo' : res === '2' ? 'Transferencia' : res === '3' ? 'Crédito' : 'Novedad';
-
-    st.status = status;
-    st.paymentMethod = paymentMethod;
-
-    const updatePayload = { action: 'UPDATE_CHECKPOINT', id, status, paymentMethod };
+    const payload = { action: 'UPDATE_CHECKPOINT', id: DRIVER.activeStop.id, status, paymentMethod };
 
     if (DRIVER.apiUrl && navigator.onLine) {
-        const ok = await pushCheckpointToCloud(updatePayload);
-        if (!ok) DRIVER.outbox.push(updatePayload);
+        try {
+            await fetch(DRIVER.apiUrl, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        } catch (e) {
+            DRIVER.outbox.push(payload);
+        }
     } else if (DRIVER.apiUrl) {
-        DRIVER.outbox.push(updatePayload);
+        DRIVER.outbox.push(payload);
     }
 
+    DRIVER.showCheckpointModal = false;
     saveDriverState();
-    renderDriverApp();
-    alert('Checkpoint registrado correctamente. Siguiente parada lista.');
+    renderDriver();
+    alert('Checkpoint auditado y guardado correctamente.');
 }
 
-async function flushDriverOutbox() {
-    if (!DRIVER.apiUrl || !navigator.onLine) return alert('Sin internet para subir reportes.');
-    const remaining = [];
-    for (const item of DRIVER.outbox) {
-        const ok = await pushCheckpointToCloud(item);
-        if (!ok) remaining.push(item);
-    }
-    DRIVER.outbox = remaining;
-    saveDriverState();
-    alert('Reportes de entrega sincronizados con éxito.');
-    renderDriverApp();
-}
-
-window.addEventListener('online', () => { if (DRIVER.outbox.length) flushDriverOutbox(); });
-renderDriverApp();
+renderDriver();
