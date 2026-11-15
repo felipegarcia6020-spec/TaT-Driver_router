@@ -2,50 +2,41 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>TAT-Driver Pro | Logística Circuit & Autoventa POS</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TAT-Driver Pro | Logística Circuit & Reparto 100% Offline</title>
     <link rel="stylesheet" href="styles.css">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="manifest" href="manifest.json">
-    <link rel="icon" href="icons/icon-192.png">
     <meta name="theme-color" content="#064e3b">
 </head>
 <body>
-    <!-- PANTALLA DE AUTENTICACIÓN / SELECCIÓN DE ROL Y EMPRENDIMIENTO -->
-    <div id="auth-screen" style="position:fixed;inset:0;background:linear-gradient(160deg, #064e3b 0%, #0f172a 100%);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;">
-        <div style="background:#ffffff;color:#0f172a;width:100%;max-width:400px;border-radius:20px;padding:24px;box-shadow:0 20px 40px rgba(0,0,0,0.4);text-align:center;">
-            <div style="width:64px;height:64px;background:#059669;color:#fff;border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:28px;font-weight:800;box-shadow:0 8px 20px rgba(5,150,105,0.4);">TAT</div>
-            <h1 style="font-size:22px;font-weight:800;margin-bottom:6px;">TAT-Driver Pro</h1>
-            <p style="font-size:13px;color:#64748b;margin-bottom:20px;">Logística Circuit-Style & POS Integrado</p>
+    <!-- LOGIN / PIN REPARTIDOR CON SALUDO AMIGABLE -->
+    <div id="auth-screen" class="auth-overlay">
+        <div class="auth-card">
+            <div class="brand-logo">TAT</div>
+            <h2 id="greeting-title">¡Hola! Qué gusto tenerte de nuevo</h2>
+            <p id="greeting-subtitle" class="quote-text">"Tu esfuerzo diario impulsa el crecimiento de cada negocio. ¡Vamos a conquistar la ruta!"</p>
             
-            <div style="text-align:left;display:flex;flex-direction:column;gap:10px;">
-                <label style="font-size:12px;font-weight:700;">Nombre del Conductor / Operador:</label>
-                <input type="text" id="login-name" value="Juan Pablo Díaz" style="margin:0;">
+            <div class="auth-form-group" style="margin-top:16px;">
+                <label><i class="fas fa-user"></i> Nombre del Conductor / Repartidor:</label>
+                <input type="text" id="driver-name" value="Juan Pablo Díaz">
+                
+                <label><i class="fas fa-route"></i> Código de Ruta Asignada:</label>
+                <input type="text" id="driver-route-code" value="RUTA-FUSA-01">
 
-                <label style="font-size:12px;font-weight:700;">Nombre del Negocio / Emprendimiento (Recibos POS):</label>
-                <input type="text" id="login-biz" value="Distribuciones Fusa" style="margin:0;">
+                <label><i class="fas fa-lock"></i> PIN de Seguridad (4 dígitos):</label>
+                <input type="password" id="driver-pin" value="1234" placeholder="PIN de 4 dígitos">
 
-                <label style="font-size:12px;font-weight:700;">Modo Operativo:</label>
-                <select id="login-role" style="margin:0;">
-                    <option value="independent">🚀 Autovendedor (Ruta + POS + Inventario)</option>
-                    <option value="fleet">🏢 Conductor de Flota (Logística Circuit)</option>
-                </select>
-
-                <button class="btn btn-success btn-lg" style="width:100%;justify-content:center;margin-top:10px;padding:14px;" onclick="handleLogin()">
-                    <i class="fas fa-play"></i> INGRESAR AL SISTEMA
+                <button class="btn btn-success btn-lg" onclick="loginDriver()">
+                    <i class="fas fa-play"></i> INICIAR RUTA (100% OFFLINE)
                 </button>
             </div>
         </div>
     </div>
 
-    <!-- CONTENEDOR PRINCIPAL DE LA APLICACIÓN -->
-    <div id="driver-app"></div>
+    <!-- CONTENEDOR PRINCIPAL REPARTO -->
+    <div id="app-container" style="display:none;"></div>
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="app.js"></script>
-    <script>
-        if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
-    </script>
 </body>
 </html>
