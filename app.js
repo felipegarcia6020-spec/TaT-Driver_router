@@ -10,7 +10,7 @@ const DRIVER = {
     apiUrl: localStorage.getItem('tat_driver_api_url') || '',
     routeStarted: false,
     quote: MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)],
-    viewMode: 'map', // 'map' | 'list' | 'agenda' | 'inventory' | 'arqueo'
+    viewMode: 'map',
     routeInfo: {
         code: 'RUTA-FUSA-01',
         name: 'Ruta Fusagasugá Centro - Norte',
@@ -188,7 +188,6 @@ function renderDriver() {
             <span class="badge badge-green"><i class="fas fa-clock"></i> ${metrics.etaMin} min</span>
         </div>
 
-        <!-- SEGMENTED CONTROL: MAP / LIST / AGENDA / INVENTARIO / ARQUEO -->
         <div class="segmented-bar">
             <button class="seg-btn ${DRIVER.viewMode==='map'?'active':''}" onclick="DRIVER.viewMode='map';renderDriver()">
                 <i class="fas fa-map"></i> Map
@@ -629,29 +628,17 @@ function renderReceiptModal() {
     const items = st.posItems || [{ name: 'Servicio / Entrega General', qty: 1, price: st.total }];
     const total = st.total;
 
-    DRIVER.lastReceiptText = `🧾 *RECIBO DE VENTA - ${DRIVER.routeInfo.businessName.toUpperCase()}*
-` +
-        `Fecha: ${nowStr}
-` +
-        `--------------------------
-` +
-        `*Cliente:* ${st.client}
-` +
-        `*Vendedor:* ${DRIVER.routeInfo.driverName}
-` +
-        `--------------------------
-` +
-        items.map(i => `• ${i.qty}x ${i.name}: $${(i.qty * i.price).toLocaleString()}`).join('
-') + `
-` +
-        `--------------------------
-` +
-        `*TOTAL: $${Number(total).toLocaleString()}*
-` +
-        `*Pago:* ${st.paymentMethod}
-
-` +
-        `_¡Gracias por su compra!_`;
+    DRIVER.lastReceiptText = "🧾 *RECIBO DE VENTA - " + DRIVER.routeInfo.businessName.toUpperCase() + "*\n" +
+        "Fecha: " + nowStr + "\n" +
+        "--------------------------\n" +
+        "*Cliente:* " + st.client + "\n" +
+        "*Vendedor:* " + DRIVER.routeInfo.driverName + "\n" +
+        "--------------------------\n" +
+        items.map(i => "• " + i.qty + "x " + i.name + ": $" + (i.qty * i.price).toLocaleString()).join("\n") + "\n" +
+        "--------------------------\n" +
+        "*TOTAL: $" + Number(total).toLocaleString() + "*\n" +
+        "*Pago:* " + st.paymentMethod + "\n\n" +
+        "_¡Gracias por su compra!_";
 
     return `
     <div class="modal-bg" style="z-index:10050;">
