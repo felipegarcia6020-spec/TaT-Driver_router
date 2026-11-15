@@ -2,8 +2,8 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TAT-Driver Route | Navegación y Entregas</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>TAT-Driver Pro | Logística Circuit & Autoventa POS</title>
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -12,7 +12,36 @@
     <meta name="theme-color" content="#064e3b">
 </head>
 <body>
+    <!-- PANTALLA DE AUTENTICACIÓN / SELECCIÓN DE ROL Y EMPRENDIMIENTO -->
+    <div id="auth-screen" style="position:fixed;inset:0;background:linear-gradient(160deg, #064e3b 0%, #0f172a 100%);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px;">
+        <div style="background:#ffffff;color:#0f172a;width:100%;max-width:400px;border-radius:20px;padding:24px;box-shadow:0 20px 40px rgba(0,0,0,0.4);text-align:center;">
+            <div style="width:64px;height:64px;background:#059669;color:#fff;border-radius:16px;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;font-size:28px;font-weight:800;box-shadow:0 8px 20px rgba(5,150,105,0.4);">TAT</div>
+            <h1 style="font-size:22px;font-weight:800;margin-bottom:6px;">TAT-Driver Pro</h1>
+            <p style="font-size:13px;color:#64748b;margin-bottom:20px;">Logística Circuit-Style & POS Integrado</p>
+            
+            <div style="text-align:left;display:flex;flex-direction:column;gap:10px;">
+                <label style="font-size:12px;font-weight:700;">Nombre del Conductor / Operador:</label>
+                <input type="text" id="login-name" value="Juan Pablo Díaz" style="margin:0;">
+
+                <label style="font-size:12px;font-weight:700;">Nombre del Negocio / Emprendimiento (Recibos POS):</label>
+                <input type="text" id="login-biz" value="Distribuciones Fusa" style="margin:0;">
+
+                <label style="font-size:12px;font-weight:700;">Modo Operativo:</label>
+                <select id="login-role" style="margin:0;">
+                    <option value="independent">🚀 Autovendedor (Ruta + POS + Inventario)</option>
+                    <option value="fleet">🏢 Conductor de Flota (Logística Circuit)</option>
+                </select>
+
+                <button class="btn btn-success btn-lg" style="width:100%;justify-content:center;margin-top:10px;padding:14px;" onclick="handleLogin()">
+                    <i class="fas fa-play"></i> INGRESAR AL SISTEMA
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- CONTENEDOR PRINCIPAL DE LA APLICACIÓN -->
     <div id="driver-app"></div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="app.js"></script>
     <script>

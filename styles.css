@@ -1,4 +1,4 @@
-/* TAT-Pro Enterprise V3 Styles */
+/* TAT-Driver Pro Enterprise Integrated Styles */
 :root {
     --primary: #2563eb;
     --primary-dark: #1e3a8a;
@@ -15,12 +15,10 @@
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
 body { background: var(--bg); color: #0f172a; min-height: 100vh; }
 
-/* Header & Navigation */
 .topbar { background: var(--dark); color: #fff; padding: 12px 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.15); position: sticky; top: 0; z-index: 100; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
 .nav-group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
-/* Buttons & Inputs */
 .btn { padding: 9px 14px; border: none; border-radius: 9px; font-weight: 600; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; font-size: 13px; text-decoration: none; transition: all 0.15s ease; }
 .btn:active { transform: scale(0.98); }
 .btn-primary { background: var(--primary); color: #fff; }
@@ -38,33 +36,21 @@ body { background: var(--bg); color: #0f172a; min-height: 100vh; }
 input, select, textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 9px; margin-bottom: 10px; font-size: 14px; outline: none; background: #fff; }
 input:focus, select:focus, textarea:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(37,99,235,0.12); }
 
-/* Layout Grids & Cards */
 .container { max-width: 1400px; margin: 16px auto; padding: 0 16px; }
 .pos-grid { display: grid; grid-template-columns: 1.45fr 1fr; gap: 18px; }
 .card { background: var(--card); border-radius: 14px; padding: 18px; box-shadow: 0 2px 10px rgba(15,23,42,0.05); border: 1px solid #e2e8f0; }
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .stat-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px; }
 
-/* Product Grid vs List Views */
-.prod-grid-view { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 12px; max-height: 540px; overflow-y: auto; padding-right: 4px; }
-.prod-list-view { display: flex; flex-direction: column; gap: 8px; max-height: 540px; overflow-y: auto; padding-right: 4px; }
-.prod-card { border: 1px solid #e2e8f0; border-radius: 11px; padding: 10px; cursor: pointer; transition: 0.15s; background: #fff; display: flex; flex-direction: column; justify-content: space-between; }
-.prod-card:hover { border-color: var(--primary); box-shadow: 0 4px 12px rgba(37,99,235,0.1); }
-.prod-row { border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 14px; cursor: pointer; background: #fff; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.prod-row:hover { border-color: var(--primary); background: #eff6ff; }
-
-/* Badges & Pills */
 .badge { padding: 3px 9px; border-radius: 20px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
 .badge-green { background: #dcfce7; color: #166534; }
 .badge-blue { background: #dbeafe; color: #1e40af; }
 .badge-amber { background: #fef3c7; color: #92400e; }
 .badge-red { background: #fee2e2; color: #991b1b; }
 
-/* Modals */
 .modal-bg { position: fixed; inset: 0; background: rgba(15,23,42,0.68); backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 9999; }
 .modal-box { background: #fff; padding: 22px; border-radius: 16px; max-width: 600px; width: 100%; box-shadow: 0 20px 40px rgba(0,0,0,0.25); max-height: 92vh; overflow-y: auto; }
 
-/* Circuit-Style Map Markers (Teardrop numbered pins like reference image) */
 .circuit-pin {
     width: 34px; height: 34px;
     border-radius: 50% 50% 50% 0;
@@ -98,7 +84,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
     font-size: 14px;
 }
 
-/* Segmented Control (List / Map toggle like reference image) */
 .segmented-bar {
     display: flex;
     background: #e2e8f0;
@@ -127,7 +112,6 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
     box-shadow: 0 2px 6px rgba(0,0,0,0.1);
 }
 
-/* Floating Route Credential Card */
 .floating-credential {
     position: absolute;
     top: 12px;
