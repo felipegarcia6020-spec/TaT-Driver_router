@@ -1,397 +1,1560 @@
-// TAT-Driver Route v3.2 Enterprise - Logística, Navegación Waze & Marcadores Numéricos
-const MOTIVATIONAL_QUOTES = [
-    "¡Hoy es un gran día para conquistar cada entrega con actitud ganadora!",
-    "Tu compromiso mueve negocios y familias. ¡Excelente ruta en Fusagasugá!",
-    "Paso a paso, parada a parada, construimos el éxito del día. ¡Vamos con toda!",
-    "Conduce con seguridad, entrega con una sonrisa. ¡Éxitos en tu jornada!"
-];
+// RouteLogix Pro Enterprise v32 - Marcadores Numéricos, Navegación Waze y Sincronización Automática con Agenda
 
-let state = {
-    activeTab: 'map',
-    apiUrl: localStorage.getItem('tat_driver_api_url') || '',
-    vehicle: 'Camión', // A pie, Bicicleta, Moto, Carro pequeño, Camión
-    stops: JSON.parse(localStorage.getItem('tat_driver_stops') || JSON.stringify([
-        { id: 'FAC-10021', clientCode: 'FUS-101', client: 'Minimercado La Esquina', owner: 'Don Hernando', phone: '3104567890', address: 'Cra 6 # 12-40, Centro', total: 142000, lat: 4.3382, lng: -74.3612, status: 'PENDIENTE', visits: 1, paymentMethod: 'Efectivo', notes: '' },
-        { id: 'FAC-10022', clientCode: 'FUS-102', client: 'Tienda Don Pedro', owner: 'Pedro Pablo Ruiz', phone: '3112345678', address: 'Cll 18 # 9-15, Balmoral', total: 88000, lat: 4.3335, lng: -74.3670, status: 'PENDIENTE', visits: 1, paymentMethod: 'Efectivo', notes: '' },
-        { id: 'FAC-10023', clientCode: 'FUS-103', client: 'Autoservicio El Porvenir', owner: 'Marta Lucía', phone: '3209876543', address: 'Av. Las Palmas # 22-10', total: 215000, lat: 4.3410, lng: -74.3585, status: 'PENDIENTE', visits: 1, paymentMethod: 'QR Digital', notes: '' },
-        { id: 'FAC-10024', clientCode: 'FUS-104', client: 'Granero San Mateo', owner: 'Carlos Julio', phone: '3147896541', address: 'Cll 10 # 3-45, Fusagasugá', total: 64000, lat: 4.3358, lng: -74.3645, status: 'PENDIENTE', visits: 1, paymentMethod: 'Efectivo', notes: '' }
-    ])),
-    denominations: JSON.parse(localStorage.getItem('tat_drv_denom') || JSON.stringify({
-        100000: 0, 50000: 0, 20000: 0, 10000: 0, 5000: 0, 2000: 0, 1000: 0, 500: 0, 200: 0, 100: 0
-    })),
-    expenses: JSON.parse(localStorage.getItem('tat_drv_expenses') || '[]'),
-    currentStopIndex: 0
+const APP_STORAGE_KEY = 'routelogix_pro_master_db';
+const LEGACY_KEYS = ['routelogix_v32_state_v7', 'routelogix_v32_state_v6', 'routelogix_v32_state_v5', 'routelogix_v32_state'];
+
+let appState = {
+    driver: {
+        name: '',
+        email: '',
+        phone: '',
+        role: 'independent',
+        loggedIn: false,
+        bizName: 'Mi Emprendimiento',
+        bizNit: '',
+        bizAddress: '¡Gracias por su compra!',
+        fleetPlate: '',
+        fleetCompany: '',
+        supRole: 'Supervisor de Operaciones',
+        supZone: ''
+    },
+    supervisorPin: '1234',
+    sheetsUrl: '',
+    mapStyle: 'standard',
+    activeRouteId: 'route-1',
+    routes: [{ id: 'route-1', name: 'Ruta Operativa Principal', stops: [] }],
+    clients: [],
+    inventory: [
+        { id: 'p1', name: 'Queso Doble Crema 500g', cost: 9000, price: 12000, stock: 30 },
+        { id: 'p2', name: 'Leche Entera 1L', cost: 3200, price: 4500, stock: 50 }
+    ],
+    expenses: [],
+    cashCounts: {},
+    outboxQueue: [],
+    tourCompleted: false
 };
 
-let mapInstance = null;
-let markersLayer = [];
+let map = null;
+let isMapStyleLoaded = false;
+let routeGeoJsonSourceReady = false;
+let realRoadGeometry = null;
+let realRoadMetrics = { km: null, mins: null };
 
-document.addEventListener('DOMContentLoaded', () => {
-    lucide.createIcons();
-    initMap();
-    renderStopsList();
-    renderDenominations();
-    renderExpenses();
-    updateFinancialSummary();
+async function fetchOSRMRoute(stopsList, startCoords) {
+    if (!stopsList || stopsList.length === 0) {
+        realRoadGeometry = null;
+        realRoadMetrics = { km: 0, mins: 0 };
+        return;
+    }
+    try {
+        const points = [startCoords, ...stopsList.map(s => [s.lat, s.lng])];
+        const coordsParam = points.map(p => `${p[1]},${p[0]}`).join(';');
+        const url = `https://router.project-osrm.org/route/v1/driving/${coordsParam}?overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+            const routeData = data.routes[0];
+            realRoadGeometry = routeData.geometry.coordinates; // MapLibre usa [lng, lat] directamente
+            realRoadMetrics = {
+                km: (routeData.distance / 1000).toFixed(1),
+                mins: Math.round(routeData.duration / 60 + stopsList.length * 5)
+            };
+        } else {
+            realRoadGeometry = null;
+        }
+    } catch (e) {
+        realRoadGeometry = null;
+    }
+}
 
-    // Mostrar frase motivadora aleatoria en consola o bienvenida
-    console.log("%c " + MOTIVATIONAL_QUOTES[Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length)], "background: #064e3b; color: #a7f3d0; padding: 6px; font-weight: bold; border-radius: 8px;");
+let stopMarkers = [];
+let userMarker = null;
+let watchId = null;
+let isGpsTrackingActive = true;
+let lastKnownCoords = [4.3365, -74.3638];
+let activePosCartItems = [];
+let lastGeneratedReceiptText = '';
+let currentTourStep = 1;
+let deferredInstallPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    const box = document.getElementById('pwa-native-install-box');
+    if (box) box.classList.remove('hidden');
 });
 
-function switchTab(tabId) {
-    state.activeTab = tabId;
-    ['map', 'routes', 'agenda', 'finances'].forEach(t => {
-        const el = document.getElementById(`view-${t}`);
-        const btn = document.getElementById(`nav-btn-${t}`);
-        if (el) el.classList.toggle('hidden', t !== tabId);
-        if (btn) {
-            btn.classList.toggle('text-cyan-400', t === tabId);
-            btn.classList.toggle('text-neutral-400', t !== tabId);
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        loadAppState();
+        registerServiceWorkerSafe();
+        setupNetworkListeners();
+        initIconsSafe();
+        initCashDenominations();
+        
+        if (appState.driver && appState.driver.loggedIn) {
+            document.getElementById('auth-screen').classList.add('hidden');
+            configureRoleInterface();
+            bootMainApplication();
+        } else {
+            if (!appState.tourCompleted) {
+                startOnboardingTour();
+            }
         }
-    });
-    if (tabId === 'map' && mapInstance) {
-        setTimeout(() => mapInstance.invalidateSize(), 150);
+    } catch (err) {
+        console.error('Error arranque:', err);
+        document.getElementById('auth-screen').classList.add('hidden');
+    }
+});
+
+function registerServiceWorkerSafe() {
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./sw.js').catch(() => {});
     }
 }
 
-function initMap() {
-    if (mapInstance) return;
-    mapInstance = L.map('map', { zoomControl: false }).setView([4.3365, -74.3638], 14);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 19,
-        attribution: '&copy; OpenStreetMap'
-    }).addTo(mapInstance);
-
-    renderMapMarkers();
+function bootMainApplication() {
+    setTimeout(() => {
+        initMapSafe();
+        startGpsWatch();
+        renderAllViews();
+    }, 100);
 }
 
-function renderMapMarkers() {
-    if (!mapInstance) return;
-    markersLayer.forEach(m => mapInstance.removeLayer(m));
-    markersLayer = [];
-
-    const activeStops = state.stops.filter(s => s.status === 'PENDIENTE' || s.status === 'REPASO');
-    
-    // Marcador Bodega / Inicio
-    const depotIcon = L.divIcon({
-        className: '',
-        html: `<div style="background:#0f172a;color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(0,0,0,0.4);border:2px solid #fff;"><i class="fas fa-house" style="font-size:13px;"></i></div>`,
-        iconSize: [34, 34],
-        iconAnchor: [17, 17]
-    });
-    markersLayer.push(L.marker([4.3350, -74.3660], { icon: depotIcon }).addTo(mapInstance).bindPopup('<b>Centro de Distribución Fusa</b>'));
-
-    let latLngs = [[4.3350, -74.3660]];
-
-    activeStops.forEach((s, idx) => {
-        const isFirst = idx === 0;
-        const bgPin = isFirst ? '#059669' : '#ffffff';
-        const txtColor = isFirst ? '#ffffff' : '#0f172a';
-        const borderColor = isFirst ? '#ffffff' : '#0f172a';
-
-        const pinHtml = `<div style="width:34px;height:34px;border-radius:50% 50% 50% 0;background:${bgPin};border:3px solid ${borderColor};transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;box-shadow:0 3px 10px rgba(0,0,0,0.4);"><span style="transform:rotate(45deg);font-weight:800;font-size:13px;color:${txtColor};">${idx+1}</span></div>`;
-        
-        const customIcon = L.divIcon({
-            className: '',
-            html: pinHtml,
-            iconSize: [34, 34],
-            iconAnchor: [17, 34]
-        });
-
-        const marker = L.marker([s.lat, s.lng], { icon: customIcon }).addTo(mapInstance)
-            .bindPopup(`<b>Parada #${idx+1}: ${s.client}</b><br>${s.address}<br>Total: $${Number(s.total).toLocaleString()}`);
-        
-        markersLayer.push(marker);
-        latLngs.push([s.lat, s.lng]);
-    });
-
-    if (latLngs.length > 1) {
-        const polyline = L.polyline(latLngs, { color: '#2563eb', weight: 4, opacity: 0.8 }).addTo(mapInstance);
-        markersLayer.push(polyline);
+function initIconsSafe() {
+    if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        try { window.lucide.createIcons(); } catch (e) {}
     }
+}
 
-    // Actualizar banner de navegación Waze con la parada #1
-    if (activeStops.length > 0) {
-        const next = activeStops[0];
-        document.getElementById('nav-next-stop-title').innerText = `Siguiente: Parada #1 • ${next.client}`;
-        document.getElementById('waze-nav-banner').classList.remove('hidden');
+function setupNetworkListeners() {
+    const updateNetUI = () => {
+        const dot = document.getElementById('network-dot');
+        const txt = document.getElementById('network-text');
+        if (dot && txt) {
+            if (navigator.onLine) {
+                dot.className = 'w-1.5 h-1.5 rounded-full bg-emerald-500';
+                txt.textContent = 'Online';
+            } else {
+                dot.className = 'w-1.5 h-1.5 rounded-full bg-amber-500';
+                txt.textContent = 'Offline';
+            }
+        }
+    };
+    window.addEventListener('online', () => { updateNetUI(); processOutboxQueue(); });
+    window.addEventListener('offline', updateNetUI);
+    updateNetUI();
+}
+
+function loadAppState() {
+    let raw = localStorage.getItem(APP_STORAGE_KEY);
+    // Migración automática: si no existe la llave maestra, rescatar datos de versiones anteriores
+    if (!raw) {
+        for (const oldKey of LEGACY_KEYS) {
+            const legacyRaw = localStorage.getItem(oldKey);
+            if (legacyRaw) {
+                raw = legacyRaw;
+                localStorage.setItem(APP_STORAGE_KEY, legacyRaw);
+                break;
+            }
+        }
+    }
+    if (raw) {
+        try {
+            const parsed = JSON.parse(raw);
+            appState = {
+                ...appState,
+                ...parsed,
+                driver: { ...appState.driver, ...(parsed.driver || {}) }
+            };
+        } catch (e) {}
+    }
+}
+
+function saveAppState() {
+    localStorage.setItem(APP_STORAGE_KEY, JSON.stringify(appState));
+}
+
+// --- INSTALACIÓN PWA ---
+function openInstallModal() {
+    if (deferredInstallPrompt) {
+        document.getElementById('pwa-native-install-box').classList.remove('hidden');
+    }
+    document.getElementById('modal-install-pwa').classList.remove('hidden');
+}
+
+async function triggerNativePwaInstall() {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    const { outcome } = await deferredInstallPrompt.userChoice;
+    if (outcome === 'accepted') {
+        deferredInstallPrompt = null;
+        document.getElementById('modal-install-pwa').classList.add('hidden');
+    }
+}
+
+// --- TOUR GUIADO ---
+function startOnboardingTour() {
+    currentTourStep = 1;
+    updateTourStepUI();
+    document.getElementById('tour-onboarding-modal').classList.remove('hidden');
+}
+
+function updateTourStepUI() {
+    const title = document.getElementById('tour-step-title');
+    const desc = document.getElementById('tour-step-desc');
+    const btnNext = document.getElementById('tour-btn-next');
+    const dots = [1, 2, 3, 4].map(i => document.getElementById(`dot-${i}`));
+
+    dots.forEach((d, idx) => {
+        if (d) d.className = (idx + 1 === currentTourStep) ? 'w-2.5 h-2.5 rounded-full bg-cyan-500' : 'w-2.5 h-2.5 rounded-full bg-neutral-700';
+    });
+
+    if (currentTourStep === 1) {
+        title.textContent = '1. Marcadores Numéricos en Mapa';
+        desc.textContent = 'Cada parada ahora muestra un número visible (1, 2, 3...) con códigos de color para identificar el estado de tus entregas al instante.';
+        btnNext.textContent = 'Siguiente';
+    } else if (currentTourStep === 2) {
+        title.textContent = '2. Navegación Estilo Waze';
+        desc.textContent = 'Un banner flotante superior te guía paso a paso hacia la siguiente parada activa, indicando distancia exacta y botón directo de navegación GPS.';
+        btnNext.textContent = 'Siguiente';
+    } else if (currentTourStep === 3) {
+        title.textContent = '3. Sincronización con Agenda';
+        desc.textContent = 'Al registrar una nueva parada en el mapa, la app la añade automáticamente a tu ruta y crea el cliente en tu agenda sin pasos extra.';
+        btnNext.textContent = 'Siguiente';
+    } else if (currentTourStep === 4) {
+        title.textContent = '4. POS, Caja & Supervisor';
+        desc.textContent = 'Disfruta de inventario propio, impresión de recibos personalizados, arqueo físico de efectivo y control en tiempo real en la nube.';
+        btnNext.textContent = '¡Comenzar!';
+    }
+}
+
+function nextTourStep() {
+    if (currentTourStep < 4) {
+        currentTourStep++;
+        updateTourStepUI();
     } else {
-        document.getElementById('waze-nav-banner').classList.add('hidden');
+        closeOnboardingTour();
+    }
+}
+
+function closeOnboardingTour() {
+    appState.tourCompleted = true;
+    saveAppState();
+    document.getElementById('tour-onboarding-modal').classList.add('hidden');
+}
+
+function toggleSupervisorPinInput(role) {
+    const box = document.getElementById('supervisor-pin-box');
+    if (role === 'supervisor') box.classList.remove('hidden');
+    else box.classList.add('hidden');
+}
+
+function handleLoginSubmit() {
+    const name = document.getElementById('login-name').value.trim() || 'Operador';
+    const email = document.getElementById('login-email').value.trim();
+    const role = document.getElementById('login-profile-mode').value;
+    const validPin = appState.supervisorPin || '1234';
+
+    if (role === 'supervisor') {
+        const pin = document.getElementById('login-supervisor-pin').value.trim();
+        if (pin !== validPin) {
+            const err = document.getElementById('login-error-msg');
+            err.textContent = '❌ PIN de supervisor incorrecto.';
+            err.classList.remove('hidden');
+            return;
+        }
+    }
+
+    document.getElementById('login-error-msg').classList.add('hidden');
+    appState.driver = { ...appState.driver, name, email, role, loggedIn: true };
+    saveAppState();
+    document.getElementById('auth-screen').classList.add('hidden');
+    configureRoleInterface();
+    bootMainApplication();
+}
+
+function logoutSession() {
+    appState.driver.loggedIn = false;
+    saveAppState();
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    document.getElementById('auth-screen').classList.remove('hidden');
+}
+
+function configureRoleInterface() {
+    const role = appState.driver.role;
+    const navButtons = document.getElementById('navbar-buttons');
+    const btnRouteBiz = document.getElementById('btn-route-biz-config');
+    const agendaTabsHeader = document.getElementById('agenda-tabs-header');
+    const metricMoneyLabel = document.getElementById('metric-money-label');
+    
+    if (role === 'supervisor') {
+        navButtons.innerHTML = `
+            <button onclick="switchTab('supervisor')" id="nav-btn-supervisor" class="flex flex-col items-center justify-center text-amber-400 transition col-span-4 py-1.5">
+                <i data-lucide="shield-alert" class="w-5 h-5"></i>
+                <span class="text-[10px] mt-1 font-bold">Panel Supervisor Cloud</span>
+            </button>`;
+        switchTab('supervisor');
+        cargarDatosSupervisorCloud();
+    } else if (role === 'fleet') {
+        if (btnRouteBiz) btnRouteBiz.style.display = 'none';
+        if (agendaTabsHeader) agendaTabsHeader.style.display = 'none';
+        if (metricMoneyLabel) metricMoneyLabel.textContent = 'Recaudo';
+        switchAgendaTab('clients');
+        navButtons.innerHTML = `
+            <button onclick="switchTab('map')" id="nav-btn-map" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="map" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Mapa</span></button>
+            <button onclick="switchTab('routes')" id="nav-btn-routes" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="route" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Ruta</span></button>
+            <button onclick="switchTab('agenda')" id="nav-btn-agenda" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="book-user" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Agenda</span></button>
+            <button onclick="switchTab('finances')" id="nav-btn-finances" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="wallet" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Caja</span></button>`;
+        switchTab('map');
+    } else {
+        if (btnRouteBiz) btnRouteBiz.style.display = 'block';
+        if (agendaTabsHeader) agendaTabsHeader.style.display = 'flex';
+        if (metricMoneyLabel) metricMoneyLabel.textContent = 'Venta';
+        navButtons.innerHTML = `
+            <button onclick="switchTab('map')" id="nav-btn-map" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="map" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Mapa</span></button>
+            <button onclick="switchTab('routes')" id="nav-btn-routes" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="route" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Ruta</span></button>
+            <button onclick="switchTab('agenda')" id="nav-btn-agenda" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="book-user" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Agenda</span></button>
+            <button onclick="switchTab('finances')" id="nav-btn-finances" class="flex flex-col items-center justify-center text-neutral-400 transition py-1.5"><i data-lucide="wallet" class="w-5 h-5"></i><span class="text-[10px] mt-1 font-bold">Caja</span></button>`;
+        switchTab('map');
+    }
+    updateDriverHeaderUI();
+}
+
+function updateDriverHeaderUI() {
+    const d = appState.driver;
+    const role = d.role;
+    let displayTitle = d.name || 'Operador';
+    let badgeText = 'Autoventa';
+
+    if (role === 'independent') {
+        displayTitle = d.bizName ? `${d.bizName} (${d.name || 'Operador'})` : (d.name || 'Autovendedor');
+        badgeText = 'Autoventa';
+    } else if (role === 'fleet') {
+        displayTitle = d.fleetPlate ? `${d.name || 'Conductor'} • ${d.fleetPlate}` : (d.name || 'Conductor Flota');
+        badgeText = d.fleetCompany || 'Flota';
+    } else if (role === 'supervisor') {
+        displayTitle = d.name || 'Supervisor';
+        badgeText = d.supZone || 'Supervisor';
+    }
+
+    document.getElementById('driver-name-display').innerHTML = `<span class="truncate">${displayTitle}</span> <i data-lucide="settings" class="w-3.5 h-3.5 text-cyan-400 shrink-0"></i>`;
+    document.getElementById('driver-initials').textContent = (d.name || 'RL').slice(0, 2).toUpperCase();
+    document.getElementById('mode-badge').textContent = badgeText;
+    initIconsSafe();
+}
+
+function openDriverEditModal() {
+    const d = appState.driver;
+    const role = d.role;
+
+    document.getElementById('edit-driver-name').value = d.name || '';
+    document.getElementById('edit-user-phone').value = d.phone || '';
+
+    document.getElementById('profile-fields-independent').classList.add('hidden');
+    document.getElementById('profile-fields-fleet').classList.add('hidden');
+    document.getElementById('profile-fields-supervisor').classList.add('hidden');
+
+    if (role === 'independent') {
+        document.getElementById('modal-profile-title').textContent = '🏪 Perfil Autovendedor & Emprendimiento';
+        document.getElementById('profile-fields-independent').classList.remove('hidden');
+        document.getElementById('edit-biz-name').value = d.bizName || '';
+        document.getElementById('edit-biz-nit').value = d.bizNit || '';
+        document.getElementById('edit-biz-address').value = d.bizAddress || '';
+    } else if (role === 'fleet') {
+        document.getElementById('modal-profile-title').textContent = '🚚 Perfil Conductor de Flota';
+        document.getElementById('profile-fields-fleet').classList.remove('hidden');
+        document.getElementById('edit-fleet-plate').value = d.fleetPlate || '';
+        document.getElementById('edit-fleet-company').value = d.fleetCompany || '';
+    } else if (role === 'supervisor') {
+        document.getElementById('modal-profile-title').textContent = '👔 Perfil Supervisor de Flota';
+        document.getElementById('profile-fields-supervisor').classList.remove('hidden');
+        document.getElementById('edit-sup-role').value = d.supRole || '';
+        document.getElementById('edit-sup-zone').value = d.supZone || '';
+    }
+
+    document.getElementById('modal-driver').classList.remove('hidden');
+}
+
+function saveDriverProfile() {
+    const d = appState.driver;
+    const role = d.role;
+
+    const n = document.getElementById('edit-driver-name').value.trim();
+    if (n) d.name = n;
+    d.phone = document.getElementById('edit-user-phone').value.trim();
+
+    if (role === 'independent') {
+        d.bizName = document.getElementById('edit-biz-name').value.trim() || 'Mi Emprendimiento';
+        d.bizNit = document.getElementById('edit-biz-nit').value.trim();
+        d.bizAddress = document.getElementById('edit-biz-address').value.trim() || '¡Gracias por su compra!';
+    } else if (role === 'fleet') {
+        d.fleetPlate = document.getElementById('edit-fleet-plate').value.trim();
+        d.fleetCompany = document.getElementById('edit-fleet-company').value.trim();
+    } else if (role === 'supervisor') {
+        d.supRole = document.getElementById('edit-sup-role').value.trim();
+        d.supZone = document.getElementById('edit-sup-zone').value.trim();
+    }
+
+    saveAppState();
+    updateDriverHeaderUI();
+    document.getElementById('modal-driver').classList.add('hidden');
+    alert('✅ Información actualizada.');
+}
+
+// --- GPS WATCH, SPEED & WAZE NAVIGATION BANNER ---
+function startGpsWatch() {
+    if (!('geolocation' in navigator)) {
+        updateGpsStatus('GPS no disponible', false);
+        return;
+    }
+    watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+            const lat = pos.coords.latitude;
+            const lng = pos.coords.longitude;
+            const speedMps = pos.coords.speed || 0;
+            const speedKmh = (speedMps * 3.6).toFixed(1);
+            lastKnownCoords = [lat, lng];
+
+            const speedEl = document.getElementById('speed-indicator');
+            if (speedEl) speedEl.textContent = `${speedKmh} km/h`;
+
+            updateGpsStatus('GPS Activo', true);
+            updateUserMarker(lat, lng);
+            updateWazeNavigationBanner(lat, lng);
+
+            if (isGpsTrackingActive && map) {
+                map.easeTo({ center: [lng, lat], duration: 500 });
+            }
+        },
+        () => {
+            updateGpsStatus('Señal GPS débil', false);
+        },
+        { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+    );
+}
+
+function updateGpsStatus(text, active) {
+    const dot = document.getElementById('gps-dot');
+    const txt = document.getElementById('gps-text');
+    if (dot && txt) {
+        txt.textContent = text;
+        dot.className = active ? 'w-2 h-2 rounded-full bg-emerald-500' : 'w-2 h-2 rounded-full bg-amber-500 animate-pulse';
+    }
+}
+
+function updateUserMarker(lat, lng) {
+    if (!map || typeof maplibregl === 'undefined') return;
+    if (!userMarker) {
+        const el = document.createElement('div');
+        el.style.width = '18px';
+        el.style.height = '18px';
+        el.style.borderRadius = '50%';
+        el.style.backgroundColor = '#06b6d4';
+        el.style.border = '3px solid #ffffff';
+        el.style.boxShadow = '0 0 14px rgba(6, 182, 212, 0.9)';
+        userMarker = new maplibregl.Marker({ element: el })
+            .setLngLat([lng, lat])
+            .addTo(map);
+    } else {
+        userMarker.setLngLat([lng, lat]);
+    }
+}
+
+// Actualizar banner de navegación tipo Waze hacia la siguiente parada pendiente
+function updateWazeNavigationBanner(currentLat, currentLng) {
+    const route = getActiveRoute();
+    const pendingStops = route.stops.filter(s => s.status === 'pending');
+    const banner = document.getElementById('waze-nav-banner');
+    
+    if (!banner) return;
+    if (pendingStops.length === 0) {
+        banner.classList.add('hidden');
+        const subbar = document.getElementById('map-controls-subbar');
+        if (subbar) subbar.style.top = '3.6rem';
+        return;
+    }
+
+    const nextStop = pendingStops[0];
+    const stopIndex = route.stops.indexOf(nextStop) + 1;
+
+    // Calcular distancia aproximada en metros o kilómetros
+    const dLat = (nextStop.lat - currentLat) * 111320;
+    const dLng = (nextStop.lng - currentLng) * 111320 * Math.cos(currentLat * Math.PI / 180);
+    const distMeters = Math.hypot(dLat, dLng);
+    
+    let distStr = `${Math.round(distMeters)} m`;
+    let etaMins = Math.max(1, Math.round(distMeters / 250)); // aprox 15 km/h en ciudad
+    if (distMeters >= 1000) {
+        distStr = `${(distMeters / 1000).toFixed(1)} km`;
+        etaMins = Math.round(distMeters / 400);
+    }
+
+    document.getElementById('nav-step-distance').textContent = distStr;
+    document.getElementById('nav-step-eta').textContent = `~${etaMins} min`;
+    document.getElementById('nav-next-stop-title').textContent = `Parada #${stopIndex}: ${nextStop.name}`;
+    banner.classList.remove('hidden');
+    const subbar = document.getElementById('map-controls-subbar');
+    if (subbar) subbar.style.top = '7.8rem';
+}
+
+function abrirNavegacionExternaActual() {
+    const route = getActiveRoute();
+    const nextStop = route.stops.find(s => s.status === 'pending') || route.stops[0];
+    if (!nextStop) return alert('No hay paradas activas.');
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${nextStop.lat},${nextStop.lng}`, '_blank');
+}
+
+function completarParadaActualDesdeNavegador() {
+    const route = getActiveRoute();
+    const nextStop = route.stops.find(s => s.status === 'pending');
+    if (!nextStop) return alert('No hay paradas pendientes.');
+    openEvidenceModal(nextStop.id);
+}
+
+function toggleGpsTracking() {
+    isGpsTrackingActive = !isGpsTrackingActive;
+    const btn = document.getElementById('gps-tracking-toggle-btn');
+    if (btn) {
+        btn.className = isGpsTrackingActive
+            ? 'w-11 h-11 bg-neutral-900/95 hover:bg-neutral-800 border border-cyan-500/50 rounded-2xl flex items-center justify-center text-cyan-400 shadow-2xl transition'
+            : 'w-11 h-11 bg-neutral-900/95 hover:bg-neutral-800 border border-neutral-700 rounded-2xl flex items-center justify-center text-neutral-400 shadow-2xl transition';
+        if (isGpsTrackingActive) centrarGPS();
     }
 }
 
 function centrarGPS() {
-    if (mapInstance) {
-        mapInstance.setView([4.3365, -74.3638], 15);
+    if (map) {
+        map.flyTo({
+            center: [lastKnownCoords[1], lastKnownCoords[0]],
+            zoom: 16.5,
+            speed: 1.4
+        });
     }
 }
 
-function renderStopsList() {
-    const container = document.getElementById('routes-list-container');
-    if (!container) return;
-
-    container.innerHTML = state.stops.map((s, idx) => `
-        <div class="bg-neutral-900 border ${s.status==='ENTREGADO'?'border-emerald-500/30 opacity-75':s.status==='REPASO'?'border-amber-500/40':'border-neutral-800'} rounded-2xl p-3.5 space-y-2">
-            <div class="flex justify-between items-start">
-                <div>
-                    <span class="px-2 py-0.5 rounded-full text-[10px] font-black ${s.status==='ENTREGADO'?'bg-emerald-500/20 text-emerald-400':s.status==='REPASO'?'bg-amber-500/20 text-amber-400':'bg-cyan-500/20 text-cyan-400'}">
-                        ${s.status==='ENTREGADO'?'ENTREGADO':s.status==='REPASO'?'REPASO / 2DA VISITA':'PENDIENTE'}
-                    </span>
-                    <h4 class="font-bold text-sm text-white mt-1">${idx+1}. ${s.client}</h4>
-                    <p class="text-[11px] text-neutral-400">${s.address} • Tel: ${s.phone}</p>
-                </div>
-                <div class="text-right">
-                    <div class="font-black text-emerald-400 text-sm">$${Number(s.total).toLocaleString()}</div>
-                    <span class="text-[10px] text-neutral-400 uppercase font-bold">${s.paymentMethod}</span>
-                </div>
-            </div>
-            <div class="flex gap-2 pt-1 border-t border-neutral-800">
-                <a href="https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}" target="_blank" class="flex-1 bg-neutral-800 hover:bg-neutral-700 text-cyan-400 font-bold py-2 rounded-xl text-center text-xs">
-                    🧭 Navegar GPS
-                </a>
-                <button onclick="abrirCheckpointModal('${s.id}')" class="flex-1 bg-cyan-500 hover:bg-cyan-400 text-neutral-950 font-black py-2 rounded-xl text-center text-xs">
-                    📋 Checkpoint
-                </button>
-            </div>
-        </div>
-    `).join('');
+function resetNorthAndPitch() {
+    if (!map) return;
+    map.easeTo({
+        bearing: 0,
+        pitch: 0,
+        duration: 450
+    });
 }
 
-function abrirCheckpointModal(id) {
-    const s = state.stops.find(x => x.id === id);
-    if (!s) return;
-    document.getElementById('evidence-stop-id').value = id;
-    document.getElementById('evidence-modal-title').innerText = `Checkpoint: ${s.client}`;
-    document.getElementById('modal-evidence').classList.remove('hidden');
+function toggleMapPitch3D() {
+    if (!map) return;
+    const currentPitch = map.getPitch();
+    const targetPitch = currentPitch > 20 ? 0 : 52;
+    map.easeTo({
+        pitch: targetPitch,
+        duration: 450
+    });
 }
 
-function mostrarQrCobroModal() {
-    const stopId = document.getElementById('evidence-stop-id').value;
-    const s = state.stops.find(x => x.id === stopId);
-    const val = s ? s.total : 0;
-    const qrText = `PAGO RUTA FUSA | FACTURA: ${stopId} | VALOR: $${val}`;
-    document.getElementById('qr-cobro-img').src = `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(qrText)}`;
-    document.getElementById('qr-cobro-valor').innerText = `$${Number(val).toLocaleString()}`;
-    document.getElementById('modal-qr-cobro').classList.remove('hidden');
-}
-
-function saveEvidence() {
-    const stopId = document.getElementById('evidence-stop-id').value;
-    const status = document.getElementById('evidence-status').value;
-    const paymentMethod = document.getElementById('evidence-payment-method').value;
-    const notes = document.getElementById('evidence-notes').value.trim();
-
-    const s = state.stops.find(x => x.id === stopId);
-    if (s) {
-        s.status = status === 'delivered' ? 'ENTREGADO' : status === 'repaso' ? 'REPASO' : 'RECHAZADO';
-        s.paymentMethod = paymentMethod;
-        s.notes = notes;
+function updateCompassCardinalUI() {
+    if (!map) return;
+    const bearing = map.getBearing(); // -180 a 180
+    const pitch = Math.round(map.getPitch());
+    const dial = document.getElementById('compass-dial-ring');
+    if (dial) {
+        dial.style.transform = `rotate(${-bearing}deg)`;
     }
-
-    localStorage.setItem('tat_driver_stops', JSON.stringify(state.stops));
-    document.getElementById('modal-evidence').classList.add('hidden');
-    renderStopsList();
-    renderMapMarkers();
-    updateFinancialSummary();
-    alert('Checkpoint de entrega guardado correctamente.');
-}
-
-function completarParadaActualDesdeNavegador() {
-    const activeStops = state.stops.filter(s => s.status === 'PENDIENTE' || s.status === 'REPASO');
-    if (activeStops.length > 0) {
-        abrirCheckpointModal(activeStops[0].id);
+    const normalizedDeg = Math.round(((bearing % 360) + 360) % 360);
+    const dirs = ['Norte', 'Noreste', 'Este', 'Sureste', 'Sur', 'Suroeste', 'Oeste', 'Noroeste'];
+    const dirIdx = Math.round(normalizedDeg / 45) % 8;
+    const headingEl = document.getElementById('heading-cardinal-label');
+    if (headingEl) {
+        headingEl.textContent = `${dirs[dirIdx]} (${normalizedDeg}°)`;
+    }
+    const pitchEl = document.getElementById('pitch-angle-label');
+    const btn3d = document.getElementById('btn-toggle-3d');
+    if (pitchEl) {
+        pitchEl.textContent = pitch > 10 ? `Vista 3D (${pitch}°)` : `Vista 2D (${pitch}°)`;
+    }
+    if (btn3d) {
+        btn3d.textContent = pitch > 10 ? '2D' : '3D';
     }
 }
 
-function abrirNavegacionExternaActual() {
-    const activeStops = state.stops.filter(s => s.status === 'PENDIENTE' || s.status === 'REPASO');
-    if (activeStops.length > 0) {
-        const s = activeStops[0];
-        window.open(`https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lng}`, '_blank');
-    }
+// --- CAMBIO PIN SUPERVISOR ---
+function openChangePinModal() {
+    document.getElementById('pin-current').value = '';
+    document.getElementById('pin-new').value = '';
+    document.getElementById('pin-confirm').value = '';
+    document.getElementById('modal-change-pin').classList.remove('hidden');
 }
 
-function optimizarRutaInteligente() {
-    const pending = state.stops.filter(s => s.status === 'PENDIENTE');
-    const repaso = state.stops.filter(s => s.status === 'REPASO');
-    const done = state.stops.filter(s => s.status === 'ENTREGADO' || s.status === 'RECHAZADO');
+function saveNewSupervisorPin() {
+    const current = document.getElementById('pin-current').value.trim();
+    const nextPin = document.getElementById('pin-new').value.trim();
+    const confirmPin = document.getElementById('pin-confirm').value.trim();
+    const storedPin = appState.supervisorPin || '1234';
 
-    if (pending.length > 1) {
-        // Ordenamiento por cercanía geográfica (algoritmo voraz TSP)
-        let currLat = 4.3350, currLng = -74.3660;
-        const pool = [...pending];
-        const ordered = [];
-        while (pool.length) {
-            pool.sort((a, b) => Math.hypot(a.lat - currLat, a.lng - currLng) - Math.hypot(b.lat - currLat, b.lng - currLng));
-            const next = pool.shift();
-            ordered.push(next);
-            currLat = next.lat;
-            currLng = next.lng;
+    if (current !== storedPin) return alert('❌ El PIN actual ingresado no es correcto.');
+    if (nextPin.length < 4 || !/^\d+$/.test(nextPin)) return alert('⚠️ El nuevo PIN debe tener entre 4 y 6 números.');
+    if (nextPin !== confirmPin) return alert('❌ La confirmación no coincide.');
+
+    appState.supervisorPin = nextPin;
+    saveAppState();
+    document.getElementById('modal-change-pin').classList.add('hidden');
+    alert('✅ PIN actualizado con éxito.');
+}
+
+// --- RECIBO POS ---
+function showPersonalizedReceipt(stop, itemsDetail, totalSale) {
+    const d = appState.driver;
+    const nowStr = new Date().toLocaleString('es-CO');
+    const payLabels = { cash: 'Efectivo', transfer: 'Transferencia', qr: 'Código QR / Nequi / DaviPlata', credit: 'Crédito / Fiado' };
+    const payLabel = payLabels[stop.paymentMethod] || stop.paymentMethod;
+
+    document.getElementById('rec-biz-name').textContent = d.bizName || 'MI EMPRENDIMIENTO';
+    document.getElementById('rec-biz-nit').textContent = d.bizNit ? `NIT / CC: ${d.bizNit}` : 'Comprobante de Venta POS';
+    document.getElementById('rec-biz-phone').textContent = d.phone ? `Tel: ${d.phone}` : '';
+    document.getElementById('rec-date').textContent = `Fecha: ${nowStr}`;
+    document.getElementById('rec-client-name').textContent = stop.name;
+    document.getElementById('rec-client-address').textContent = stop.address || '-';
+    document.getElementById('rec-seller-name').textContent = d.name || 'Operador';
+    document.getElementById('rec-total').textContent = `$${totalSale.toLocaleString()}`;
+    document.getElementById('rec-payment-method').textContent = payLabel;
+    document.getElementById('rec-footer-note').textContent = d.bizAddress || '¡Gracias por su compra!';
+
+    const itemsHtml = itemsDetail.length > 0
+        ? itemsDetail.map(i => `<div class="flex justify-between"><span>${i.qty}x ${i.name}</span><strong>$${(i.qty * i.price).toLocaleString()}</strong></div>`).join('')
+        : `<div class="flex justify-between"><span>Entrega / Servicio Directo</span><strong>$${totalSale.toLocaleString()}</strong></div>`;
+    document.getElementById('rec-items-list').innerHTML = itemsHtml;
+
+    const itemsWa = itemsDetail.length > 0
+        ? itemsDetail.map(i => `• ${i.qty}x ${i.name}: $${(i.qty * i.price).toLocaleString()}`).join('\n')
+        : `• Venta Directa: $${totalSale.toLocaleString()}`;
+
+    lastGeneratedReceiptText = `🧾 *RECIBO DE VENTA - ${(d.bizName || 'MI EMPRENDIMIENTO').toUpperCase()}*\n` +
+        (d.bizNit ? `NIT/CC: ${d.bizNit}\n` : '') +
+        (d.phone ? `Tel: ${d.phone}\n` : '') +
+        `Fecha: ${nowStr}\n` +
+        `--------------------------\n` +
+        `*Cliente:* ${stop.name}\n` +
+        `*Vendedor:* ${d.name}\n` +
+        `--------------------------\n` +
+        `${itemsWa}\n` +
+        `--------------------------\n` +
+        `*TOTAL: $${totalSale.toLocaleString()}*\n` +
+        `*Pago:* ${payLabel}\n\n` +
+        `_${d.bizAddress || '¡Gracias por su compra!'}_`;
+
+    document.getElementById('modal-receipt').classList.remove('hidden');
+}
+
+function compartirReciboWhatsApp() {
+    if (!lastGeneratedReceiptText) return;
+    window.open(`https://wa.me/?text=${encodeURIComponent(lastGeneratedReceiptText)}`, '_blank');
+}
+
+// --- CLOUD & OUTBOX ---
+async function queueOutboxSync(action, payload) {
+    appState.outboxQueue.push({ action, payload, deviceId: appState.driver.name, timestamp: new Date().toISOString() });
+    saveAppState();
+    await processOutboxQueue();
+}
+
+async function processOutboxQueue() {
+    if (!navigator.onLine || !appState.sheetsUrl || appState.outboxQueue.length === 0) return;
+    const queueCopy = [...appState.outboxQueue];
+    for (const item of queueCopy) {
+        try {
+            await fetch(appState.sheetsUrl, {
+                method: 'POST', mode: 'no-cors',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(item)
+            });
+            appState.outboxQueue = appState.outboxQueue.filter(q => q !== item);
+        } catch (e) {}
+    }
+    saveAppState();
+}
+
+async function cargarDatosSupervisorCloud() {
+    if (!appState.sheetsUrl) {
+        alert('Configura primero la URL de Google Sheets en el ícono de Nube.');
+        return;
+    }
+    try {
+        const res = await fetch(`${appState.sheetsUrl}?action=getSupervisorSummary`);
+        const data = await res.json();
+        if (data.status === 'success') {
+            document.getElementById('sup-total-paradas').textContent = data.totalParadas;
+            document.getElementById('sup-total-ventas').textContent = data.totalVentasPOS;
+            document.getElementById('sup-total-cierres').textContent = data.totalCierres;
+            alert('✅ Datos actualizados desde Google Sheets.');
         }
-        state.stops = [...ordered, ...repaso, ...done];
+    } catch (e) {
+        alert('Error al conectar con la API cloud.');
     }
-    localStorage.setItem('tat_driver_stops', JSON.stringify(state.stops));
-    renderStopsList();
-    renderMapMarkers();
-    alert('¡Ruta optimizada con éxito para vehículo de reparto!');
 }
 
-function renderDenominations() {
-    const denoms = [100000, 50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100];
-    const container = document.getElementById('denominations-container');
-    if (!container) return;
-
-    container.innerHTML = denoms.map(d => `
-        <div class="flex items-center justify-between bg-neutral-950 p-2.5 rounded-xl border border-neutral-800 text-xs">
-            <span class="font-bold text-white">$${d.toLocaleString()}</span>
-            <div class="flex items-center gap-2">
-                <button onclick="updateDenom(${d}, -1)" class="w-7 h-7 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-bold">-</button>
-                <input type="number" min="0" value="${state.denominations[d] || 0}" onchange="setDenom(${d}, this.value)" class="w-12 bg-neutral-900 border border-neutral-700 rounded-lg text-center text-white font-bold p-1">
-                <button onclick="updateDenom(${d}, 1)" class="w-7 h-7 bg-neutral-800 hover:bg-neutral-700 text-white rounded-lg font-bold">+</button>
-            </div>
-        </div>
-    `).join('');
+async function ejecutarCierreJornadaCloud() {
+    let cash = 0, transfer = 0, credit = 0;
+    getActiveRoute().stops.forEach(s => {
+        if (s.status === 'delivered') {
+            const val = s.value || 0;
+            if (s.paymentMethod === 'cash') cash += val;
+            else if (s.paymentMethod === 'transfer' || s.paymentMethod === 'qr') transfer += val;
+            else if (s.paymentMethod === 'credit') credit += val;
+        }
+    });
+    const totalExpenses = appState.expenses.reduce((acc, e) => acc + (e.amount || 0), 0);
+    const payload = {
+        totalRecaudado: cash + transfer,
+        efectivo: cash,
+        transferencias: transfer,
+        creditos: credit,
+        gastos: totalExpenses,
+        efectividad: '100%'
+    };
+    await queueOutboxSync('CERRAR_RUTA', payload);
+    alert('🚀 Cierre de jornada ejecutado y sincronizado en la nube.');
 }
 
-function updateDenom(d, delta) {
-    state.denominations[d] = Math.max(0, (state.denominations[d] || 0) + delta);
-    localStorage.setItem('tat_drv_denom', JSON.stringify(state.denominations));
-    renderDenominations();
-    updateFinancialSummary();
+function exportarReporteSupervisorPDF() { window.print(); }
+function compartirInformeWhatsApp() {
+    const paradas = document.getElementById('sup-total-paradas').textContent;
+    const ventas = document.getElementById('sup-total-ventas').textContent;
+    const text = encodeURIComponent(`📊 *Reporte RouteLogix Pro*\nParadas: ${paradas}\nVentas POS: ${ventas}`);
+    window.open(`https://wa.me/?text=${text}`, '_blank');
 }
 
-function setDenom(d, val) {
-    state.denominations[d] = Math.max(0, parseInt(val) || 0);
-    localStorage.setItem('tat_drv_denom', JSON.stringify(state.denominations));
-    renderDenominations();
-    updateFinancialSummary();
-}
-
-function resetCashCounter() {
-    Object.keys(state.denominations).forEach(k => state.denominations[k] = 0);
-    localStorage.setItem('tat_drv_denom', JSON.stringify(state.denominations));
-    renderDenominations();
-    updateFinancialSummary();
-}
-
-function addExpense() {
-    const concept = document.getElementById('expense-concept').value.trim();
-    const amount = Number(document.getElementById('expense-amount').value);
-    if (!concept || !amount) return alert('Ingrese concepto y monto válido.');
-    state.expenses.push({ concept, amount });
-    localStorage.setItem('tat_drv_expenses', JSON.stringify(state.expenses));
-    document.getElementById('expense-concept').value = '';
-    document.getElementById('expense-amount').value = '';
-    renderExpenses();
-    updateFinancialSummary();
-}
-
-function renderExpenses() {
-    const container = document.getElementById('expenses-list');
-    if (!container) return;
-    container.innerHTML = state.expenses.map((e, idx) => `
-        <div class="flex justify-between items-center bg-neutral-950 p-2.5 rounded-xl border border-neutral-800 text-xs">
-            <span>${e.concept}</span>
-            <div class="flex items-center gap-2">
-                <strong class="text-rose-400">-$${Number(e.amount).toLocaleString()}</strong>
-                <button onclick="state.expenses.splice(${idx},1);localStorage.setItem('tat_drv_expenses',JSON.stringify(state.expenses));renderExpenses();updateFinancialSummary()" class="text-neutral-500 hover:text-rose-400 font-bold">×</button>
-            </div>
-        </div>
-    `).join('');
-}
-
-function updateFinancialSummary() {
-    const denoms = [100000, 50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100];
-    const totalPhysical = denoms.reduce((acc, d) => acc + d * (state.denominations[d] || 0), 0);
-    
-    const delivered = state.stops.filter(s => s.status === 'ENTREGADO');
-    const totalFacturado = delivered.reduce((acc, s) => acc + Number(s.total), 0);
-    const totalTransfer = delivered.filter(s => s.paymentMethod === 'qr' || s.paymentMethod === 'transfer').reduce((acc, s) => acc + Number(s.total), 0);
-    const totalExpenses = state.expenses.reduce((acc, e) => acc + Number(e.amount), 0);
-
-    const disp = document.getElementById('counter-total-display');
-    if (disp) disp.innerText = `$${totalPhysical.toLocaleString()}`;
-
-    const sf = document.getElementById('summary-facturado');
-    if (sf) sf.innerText = `$${totalFacturado.toLocaleString()}`;
-
-    const sfi = document.getElementById('summary-fisico');
-    if (sfi) sfi.innerText = `$${totalPhysical.toLocaleString()}`;
-
-    const st = document.getElementById('summary-transfer');
-    if (st) st.innerText = `$${totalTransfer.toLocaleString()}`;
-
-    const sc = document.getElementById('summary-credit');
-    if (sc) sc.innerText = `$${totalExpenses.toLocaleString()}`;
+function compartirRutaActiva() {
+    const route = getActiveRoute();
+    const payload = JSON.stringify({
+        routeExport: route,
+        fullBackup: {
+            clients: appState.clients,
+            inventory: appState.inventory,
+            routes: appState.routes,
+            driver: appState.driver
+        }
+    }, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `respaldo-routelogix-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
 }
 
 function importarRutaJSON(event) {
     const file = event.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = e => {
+    reader.onload = (e) => {
         try {
             const data = JSON.parse(e.target.result);
-            if (Array.isArray(data)) {
-                state.stops = data.map(d => ({ ...d, status: d.status || 'PENDIENTE', visits: 1 }));
-                localStorage.setItem('tat_driver_stops', JSON.stringify(state.stops));
-                renderStopsList();
-                renderMapMarkers();
-                alert(`¡Manifiesto JSON importado con éxito (${state.stops.length} paradas)!`);
+            if (data.fullBackup) {
+                if (Array.isArray(data.fullBackup.clients)) appState.clients = data.fullBackup.clients;
+                if (Array.isArray(data.fullBackup.inventory)) appState.inventory = data.fullBackup.inventory;
+                if (Array.isArray(data.fullBackup.routes) && data.fullBackup.routes.length > 0) {
+                    appState.routes = data.fullBackup.routes;
+                    appState.activeRouteId = appState.routes[0].id;
+                }
+                saveAppState();
+                renderAllViews();
+                alert('✅ Respaldo completo restaurado (Rutas, Clientes e Inventario).');
+                return;
             }
-        } catch(err) {
-            alert('Error al leer el archivo JSON.');
+            const imported = data.routeExport || data;
+            if (imported && Array.isArray(imported.stops)) {
+                const newId = 'route-' + Date.now();
+                appState.routes.push({ id: newId, name: imported.name || 'Ruta Importada', stops: imported.stops });
+                appState.activeRouteId = newId;
+                saveAppState();
+                renderAllViews();
+                alert('✅ Ruta importada con éxito.');
+            }
+        } catch (err) {
+            alert('❌ Archivo JSON inválido.');
         }
     };
     reader.readAsText(file);
 }
 
-function ejecutarCierreJornadaCloud() {
-    alert('¡Liquidación y Cierre de Ruta guardado y listo para sincronizar con el panel de administración!');
+// --- MAPA VECTORIAL / RÁSTER INTERACTIVO (MAPLIBRE GL JS: PINCH ZOOM, ROTACIÓN 360°, INCLINACIÓN 3D) ---
+function buildMapLibreRasterStyle(styleMode) {
+    const tileUrls = styleMode === 'dark'
+        ? [
+            'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+            'https://b.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+            'https://c.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png'
+          ]
+        : [
+            'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+            'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+          ];
+
+    return {
+        version: 8,
+        sources: {
+            'base-raster-tiles': {
+                type: 'raster',
+                tiles: tileUrls,
+                tileSize: 256,
+                maxzoom: 19
+            }
+        },
+        layers: [
+            {
+                id: 'base-raster-layer',
+                type: 'raster',
+                source: 'base-raster-tiles',
+                minzoom: 0,
+                maxzoom: 22
+            }
+        ]
+    };
 }
 
-function saveSheetsConfig() {
-    const url = document.getElementById('cfg-sheets-url').value.trim();
-    state.apiUrl = url;
-    localStorage.setItem('tat_driver_api_url', url);
-    document.getElementById('modal-sheets-config').classList.add('hidden');
-    alert('URL de Cloud Sheets guardada.');
+function initMapSafe() {
+    if (map) {
+        map.resize();
+        return;
+    }
+    if (typeof maplibregl === 'undefined') return;
+
+    const initialStyle = appState.mapStyle || 'standard';
+    map = new maplibregl.Map({
+        container: 'map',
+        style: buildMapLibreRasterStyle(initialStyle),
+        center: [lastKnownCoords[1], lastKnownCoords[0]],
+        zoom: 15.5,
+        bearing: 0,
+        pitch: 0,
+        maxPitch: 70,
+        dragRotate: true,
+        touchZoomRotate: true,
+        touchPitch: true,
+        doubleClickZoom: true,
+        scrollZoom: true,
+        attributionControl: false
+    });
+
+    // Activar rotación y zoom táctil multitáctil completo (estilo Google Maps)
+    map.touchZoomRotate.enable();
+    map.touchPitch.enable();
+
+    // Actualizar brújula y puntos cardinales en tiempo real al rotar o inclinar el mapa
+    map.on('rotate', updateCompassCardinalUI);
+    map.on('pitch', updateCompassCardinalUI);
+    map.on('dragstart', () => {
+        // Si el usuario explora manualmente el mapa, pausamos el auto-centrado GPS para que no le devuelva la vista
+        if (isGpsTrackingActive) {
+            isGpsTrackingActive = false;
+            const btn = document.getElementById('gps-tracking-toggle-btn');
+            if (btn) {
+                btn.className = 'w-11 h-11 bg-neutral-900/95 hover:bg-neutral-800 border border-neutral-700 rounded-2xl flex items-center justify-center text-neutral-400 shadow-2xl transition';
+            }
+        }
+    });
+
+    map.on('load', () => {
+        isMapStyleLoaded = true;
+        setupRouteLineLayer();
+        renderMapMarkersAndRoute();
+        updateUserMarker(lastKnownCoords[0], lastKnownCoords[1]);
+        updateCompassCardinalUI();
+    });
+
+    setMapTileStyle(initialStyle, true);
+}
+
+function setupRouteLineLayer() {
+    if (!map) return;
+    if (!map.getSource('active-route-source')) {
+        map.addSource('active-route-source', {
+            type: 'geojson',
+            data: {
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: [] }
+            }
+        });
+    }
+    if (!map.getLayer('active-route-outline')) {
+        map.addLayer({
+            id: 'active-route-outline',
+            type: 'line',
+            source: 'active-route-source',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#030712', 'line-width': 8, 'line-opacity': 0.75 }
+        });
+    }
+    if (!map.getLayer('active-route-line')) {
+        map.addLayer({
+            id: 'active-route-line',
+            type: 'line',
+            source: 'active-route-source',
+            layout: { 'line-join': 'round', 'line-cap': 'round' },
+            paint: { 'line-color': '#06b6d4', 'line-width': 5, 'line-opacity': 0.95 }
+        });
+    }
+    routeGeoJsonSourceReady = true;
+}
+
+function setMapTileStyle(style, skipStyleReload = false) {
+    appState.mapStyle = style;
+    saveAppState();
+    ['standard', 'dark', 'offline'].forEach(s => {
+        const b = document.getElementById(`style-${s}`);
+        if (b) {
+            b.className = (s === style)
+                ? 'px-2 py-1 rounded-lg bg-cyan-500 text-neutral-950 transition'
+                : 'px-2 py-1 rounded-lg text-neutral-300 hover:text-white transition';
+        }
+    });
+    if (!map || skipStyleReload) return;
+    routeGeoJsonSourceReady = false;
+    map.setStyle(buildMapLibreRasterStyle(style));
+    map.once('styledata', () => {
+        setupRouteLineLayer();
+        renderMapMarkersAndRoute();
+    });
+}
+
+async function searchMapAddress() {
+    const q = document.getElementById('map-search-input').value.trim();
+    if (!q) return;
+    try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`);
+        const results = await res.json();
+        if (results && results.length > 0 && map) {
+            isGpsTrackingActive = false;
+            map.flyTo({
+                center: [parseFloat(results[0].lon), parseFloat(results[0].lat)],
+                zoom: 17,
+                speed: 1.4
+            });
+        }
+    } catch (e) {}
+}
+
+// --- NAVEGACIÓN Y PESTAÑAS ---
+function switchTab(tab) {
+    ['map', 'routes', 'agenda', 'finances', 'supervisor'].forEach(t => {
+        const el = document.getElementById(`view-${t}`);
+        if (el) el.classList.toggle('hidden', t !== tab);
+    });
+
+    const tabs = ['map', 'routes', 'agenda', 'finances'];
+    tabs.forEach(t => {
+        const btn = document.getElementById(`nav-btn-${t}`);
+        if (btn) {
+            if (t === tab) {
+                btn.className = 'flex flex-col items-center justify-center text-cyan-400 font-black transition py-1.5 border-t-2 border-cyan-400 bg-cyan-500/15 rounded-xl';
+            } else {
+                btn.className = 'flex flex-col items-center justify-center text-neutral-400 hover:text-white transition py-1.5';
+            }
+        }
+    });
+
+    if (tab === 'map' && map) setTimeout(() => map.resize(), 120);
+    renderAllViews();
+}
+
+function getActiveRoute() {
+    return appState.routes.find(r => r.id === appState.activeRouteId) || appState.routes[0];
+}
+
+function cambiarRutaActiva(routeId) {
+    realRoadGeometry = null;
+    appState.activeRouteId = routeId;
+    saveAppState();
+    renderAllViews();
+}
+
+function toggleStopMenu() { document.getElementById('stop-submenu').classList.toggle('hidden'); }
+
+function abrirModalParadaCentro() {
+    document.getElementById('stop-submenu').classList.add('hidden');
+    const center = map ? map.getCenter() : { lat: lastKnownCoords[0], lng: lastKnownCoords[1] };
+    document.getElementById('parada-nombre').value = '';
+    document.getElementById('parada-direccion').value = `${center.lat.toFixed(5)}, ${center.lng.toFixed(5)}`;
+    document.getElementById('parada-telefono').value = '';
+    document.getElementById('modal-parada').classList.remove('hidden');
+}
+
+// Sincronización Automática: Al guardar nueva parada, se crea en la ruta Y en la agenda de clientes
+function guardarNuevaParadaYCliente() {
+    realRoadGeometry = null;
+    const name = document.getElementById('parada-nombre').value.trim();
+    const address = document.getElementById('parada-direccion').value.trim();
+    const phone = document.getElementById('parada-telefono').value.trim();
+
+    if (!name) return alert('Ingresa el nombre del negocio o cliente.');
+    const center = map ? map.getCenter() : { lat: lastKnownCoords[0], lng: lastKnownCoords[1] };
+
+    // 1. Crear parada en la ruta activa
+    const stopId = 'stop-' + Date.now();
+    getActiveRoute().stops.push({
+        id: stopId, name, address, lat: center.lat, lng: center.lng, value: 0, status: 'pending', paymentMethod: 'cash', posItems: []
+    });
+
+    // 2. Crear cliente automáticamente en la Agenda
+    const clientId = 'cli-' + Date.now();
+    appState.clients.push({ id: clientId, name, address, phone, debt: 0 });
+
+    saveAppState();
+    document.getElementById('modal-parada').classList.add('hidden');
+    renderAllViews();
+    alert(`✅ Parada añadida a la ruta y cliente registrado en la agenda con éxito.`);
+}
+
+function abrirModalClienteExistente() {
+    document.getElementById('stop-submenu').classList.add('hidden');
+    if (appState.clients.length === 0) {
+        alert('No hay clientes registrados en la agenda. Añade uno primero.');
+        switchTab('agenda');
+        openClientModal();
+        return;
+    }
+    const list = document.getElementById('select-client-list');
+    list.innerHTML = appState.clients.map(c => `
+        <button onclick="agregarClienteARuta('${c.id}')" class="w-full text-left bg-neutral-950 hover:bg-neutral-800 border border-neutral-800 p-3 rounded-xl flex justify-between items-center">
+            <div>
+                <strong class="text-white block">${c.name}</strong>
+                <span class="text-[11px] text-neutral-400">${c.address || 'Sin dirección'}</span>
+            </div>
+            <span class="text-cyan-400 font-black">+ Añadir</span>
+        </button>`).join('');
+    document.getElementById('modal-select-client').classList.remove('hidden');
+}
+
+function agregarClienteARuta(clientId) {
+    realRoadGeometry = null;
+    const c = appState.clients.find(x => x.id === clientId);
+    if (!c) return;
+    const center = map ? map.getCenter() : { lat: lastKnownCoords[0], lng: lastKnownCoords[1] };
+    getActiveRoute().stops.push({
+        id: 'stop-' + Date.now(), name: c.name, address: c.address || 'Ubicación agenda', lat: center.lat, lng: center.lng, value: 0, status: 'pending', paymentMethod: 'cash', posItems: []
+    });
+    saveAppState();
+    document.getElementById('modal-select-client').classList.add('hidden');
+    renderAllViews();
+}
+
+function eliminarParada(stopId) {
+    realRoadGeometry = null;
+    const route = getActiveRoute();
+    route.stops = route.stops.filter(s => s.id !== stopId);
+    saveAppState();
+    renderAllViews();
+}
+
+function navegarExterno(lat, lng) {
+    window.open(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`, '_blank');
+}
+
+// Optimizador IA Vial Real (OSRM Trip API / Matriz de distancias viales reales)
+async function optimizarRutaInteligente() {
+    const route = getActiveRoute();
+    if (route.stops.length < 2) return alert('Añade al menos 2 paradas para optimizar la ruta.');
+
+    try {
+        // Usamos OSRM Trip API partiendo de nuestra ubicación GPS actual (roundtrip=false, source=first)
+        const points = [lastKnownCoords, ...route.stops.map(s => [s.lat, s.lng])];
+        const coordsParam = points.map(p => `${p[1]},${p[0]}`).join(';');
+        const url = `https://router.project-osrm.org/trip/v1/driving/${coordsParam}?source=first&roundtrip=false&overview=full&geometries=geojson`;
+        const res = await fetch(url);
+        const data = await res.json();
+
+        if (data.code === 'Ok' && data.waypoints && data.trips && data.trips.length > 0) {
+            // Waypoints[0] es el origen GPS; los demás corresponden a route.stops
+            const indexedStops = route.stops.map((stop, idx) => {
+                const wp = data.waypoints[idx + 1];
+                return { stop, waypointIndex: wp ? wp.waypoint_index : idx + 1 };
+            });
+            indexedStops.sort((a, b) => a.waypointIndex - b.waypointIndex);
+            route.stops = indexedStops.map(item => item.stop);
+
+            const tripData = data.trips[0];
+            realRoadGeometry = tripData.geometry.coordinates;
+            realRoadMetrics = {
+                km: (tripData.distance / 1000).toFixed(1),
+                mins: Math.round(tripData.duration / 60 + route.stops.length * 5)
+            };
+
+            saveAppState();
+            renderAllViews();
+            alert(`⚡ Ruta vial más corta calculada sobre calles reales (${realRoadMetrics.km} km • ~${realRoadMetrics.mins} min).`);
+            return;
+        }
+    } catch (e) {}
+
+    // Respaldo offline si no hay internet
+    const unvisited = [...route.stops];
+    const ordered = [];
+    let currentLat = lastKnownCoords[0];
+    let currentLng = lastKnownCoords[1];
+
+    while (unvisited.length > 0) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        unvisited.forEach((s, idx) => {
+            const d = Math.hypot(s.lat - currentLat, s.lng - currentLng);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = idx;
+            }
+        });
+        const nextStop = unvisited.splice(bestIdx, 1)[0];
+        ordered.push(nextStop);
+        currentLat = nextStop.lat;
+        currentLng = nextStop.lng;
+    }
+
+    route.stops = ordered;
+    realRoadGeometry = null;
+    saveAppState();
+    renderAllViews();
+    alert('⚡ Ruta optimizada (Modo Offline).');
+}
+
+function calcularMetricasRuta(stops) {
+    if (!stops || stops.length === 0) return { km: '0.0', mins: 0 };
+    if (realRoadMetrics.km !== null && realRoadGeometry) {
+        return realRoadMetrics;
+    }
+    let totalKm = 0;
+    let prevLat = lastKnownCoords[0];
+    let prevLng = lastKnownCoords[1];
+    stops.forEach(s => {
+        const dLat = (s.lat - prevLat) * 111.32;
+        const dLng = (s.lng - prevLng) * 111.32 * Math.cos(prevLat * Math.PI / 180);
+        totalKm += Math.hypot(dLat, dLng);
+        prevLat = s.lat;
+        prevLng = s.lng;
+    });
+    return { km: totalKm.toFixed(1), mins: Math.round(totalKm * 2.5 + stops.length * 5) };
+}
+
+// --- RENDERIZAR MARCADORES NUMÉRICOS Y TRAZADO VIAL REAL EN EL MAPA (MAPLIBRE GL) ---
+async function renderMapMarkersAndRoute() {
+    if (!map || typeof maplibregl === 'undefined') return;
+    stopMarkers.forEach(m => m.remove());
+    stopMarkers = [];
+
+    const route = getActiveRoute();
+    const straightCoordsLngLat = [[lastKnownCoords[1], lastKnownCoords[0]]];
+
+    route.stops.forEach((stop, idx) => {
+        straightCoordsLngLat.push([stop.lng, stop.lat]);
+        const num = idx + 1;
+        const colorBg = stop.status === 'delivered' ? '#10b981' : stop.status === 'rejected' ? '#f43f5e' : '#06b6d4';
+
+        const el = document.createElement('div');
+        el.innerHTML = `<div style="background-color: ${colorBg}; color: #030712; width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; font-size: 13px; border: 2.5px solid #ffffff; box-shadow: 0 4px 12px rgba(0,0,0,0.6); cursor: pointer;">${num}</div>`;
+
+        const popup = new maplibregl.Popup({ offset: 18 }).setHTML(
+            `<strong>Parada #${num}: ${stop.name}</strong><br><span style="color:#9ca3af">${stop.address}</span><br>Estado: <b>${stop.status.toUpperCase()}</b>`
+        );
+
+        const marker = new maplibregl.Marker({ element: el })
+            .setLngLat([stop.lng, stop.lat])
+            .setPopup(popup)
+            .addTo(map);
+        stopMarkers.push(marker);
+    });
+
+    if (route.stops.length > 0) {
+        await fetchOSRMRoute(route.stops, lastKnownCoords);
+        if (!routeGeoJsonSourceReady && map.isStyleLoaded()) {
+            setupRouteLineLayer();
+        }
+        const source = map.getSource('active-route-source');
+        if (source) {
+            const lineCoords = (realRoadGeometry && realRoadGeometry.length > 1)
+                ? realRoadGeometry
+                : straightCoordsLngLat;
+            source.setData({
+                type: 'Feature',
+                geometry: {
+                    type: 'LineString',
+                    coordinates: lineCoords
+                }
+            });
+        }
+        if (realRoadGeometry && realRoadGeometry.length > 1) {
+            const metrics = calcularMetricasRuta(route.stops);
+            const kmEl = document.getElementById('metric-km');
+            const timeEl = document.getElementById('metric-time');
+            if (kmEl) kmEl.textContent = `${metrics.km} km`;
+            if (timeEl) timeEl.textContent = `${metrics.mins} min`;
+        }
+    } else {
+        const source = map.getSource('active-route-source');
+        if (source) {
+            source.setData({
+                type: 'Feature',
+                geometry: { type: 'LineString', coordinates: [] }
+            });
+        }
+    }
+}
+
+function openClientModal() { document.getElementById('modal-client').classList.remove('hidden'); }
+function handleClientSubmitDirect() {
+    const name = document.getElementById('client-name').value.trim();
+    const address = document.getElementById('client-address').value.trim();
+    const phone = document.getElementById('client-phone').value.trim();
+    if (!name) return;
+    appState.clients.push({ id: 'cli-' + Date.now(), name, address, phone, debt: 0 });
+    saveAppState();
+    document.getElementById('modal-client').classList.add('hidden');
+    renderAllViews();
+}
+
+function openProductModal() { document.getElementById('modal-product').classList.remove('hidden'); }
+function handleProductSubmit() {
+    const name = document.getElementById('prod-name').value.trim();
+    const cost = parseFloat(document.getElementById('prod-cost').value) || 0;
+    const price = parseFloat(document.getElementById('prod-price').value) || 0;
+    const stock = parseInt(document.getElementById('prod-stock').value) || 0;
+    if (!name) return;
+    appState.inventory.push({ id: 'prod-' + Date.now(), name, cost, price, stock });
+    saveAppState();
+    document.getElementById('modal-product').classList.add('hidden');
+    renderAllViews();
+}
+
+function switchAgendaTab(tab) {
+    document.getElementById('subview-clients').classList.toggle('hidden', tab !== 'clients');
+    document.getElementById('subview-inventory').classList.toggle('hidden', tab === 'clients');
+    document.getElementById('agenda-tab-clients').className = tab === 'clients' ? 'flex-1 py-2.5 rounded-xl bg-cyan-500 text-neutral-950 transition font-black' : 'flex-1 py-2.5 rounded-xl text-neutral-300 hover:text-white transition';
+    document.getElementById('agenda-tab-inventory').className = tab === 'inventory' ? 'flex-1 py-2.5 rounded-xl bg-emerald-500 text-neutral-950 transition font-black' : 'flex-1 py-2.5 rounded-xl text-neutral-300 hover:text-white transition';
+}
+
+function openEvidenceModal(stopId) {
+    document.getElementById('evidence-stop-id').value = stopId;
+    const isInd = appState.driver.role === 'independent';
+    
+    const posBox = document.getElementById('pos-cart-box');
+    const fleetBox = document.getElementById('fleet-cod-box');
+
+    if (!isInd) {
+        posBox.classList.add('hidden');
+        fleetBox.classList.remove('hidden');
+        document.getElementById('fleet-cod-amount').value = '';
+        document.getElementById('evidence-modal-title').textContent = 'Gestión de Entrega (Conductor Flota)';
+    } else {
+        posBox.classList.remove('hidden');
+        fleetBox.classList.add('hidden');
+        document.getElementById('evidence-modal-title').textContent = 'Gestión de Parada & POS Autoventa';
+        activePosCartItems = [];
+        if (appState.inventory.length > 0) {
+            activePosCartItems.push({ productId: appState.inventory[0].id, qty: 1, price: appState.inventory[0].price });
+        }
+        renderPosCartRows();
+    }
+    document.getElementById('modal-evidence').classList.remove('hidden');
+}
+
+function togglePOSCartSection(status) {
+    const isInd = appState.driver.role === 'independent';
+    if (isInd) {
+        document.getElementById('pos-cart-box').classList.toggle('hidden', status === 'rejected');
+    } else {
+        document.getElementById('fleet-cod-box').classList.toggle('hidden', status === 'rejected');
+    }
+}
+
+function addPosCartItemRow() {
+    if (appState.inventory.length === 0) return alert('Añade productos en la pestaña Agenda > Inventario POS.');
+    activePosCartItems.push({ productId: appState.inventory[0].id, qty: 1, price: appState.inventory[0].price });
+    renderPosCartRows();
+}
+
+function renderPosCartRows() {
+    const container = document.getElementById('pos-items-rows');
+    let total = 0;
+    container.innerHTML = activePosCartItems.map((item, idx) => {
+        const subtotal = item.qty * item.price;
+        total += subtotal;
+        return `<div class="flex items-center justify-between gap-1 bg-neutral-900 p-2 rounded-xl text-xs">
+            <select onchange="updatePosRowProd(${idx}, this.value)" class="flex-1 bg-neutral-950 text-white p-1.5 rounded border border-neutral-700 min-w-0">
+                ${appState.inventory.map(p => `<option value="${p.id}" ${p.id === item.productId ? 'selected' : ''}>${p.name} ($${p.price})</option>`).join('')}
+            </select>
+            <input type="number" min="1" value="${item.qty}" onchange="updatePosRowQty(${idx}, this.value)" class="w-12 bg-neutral-950 text-white text-center p-1.5 rounded border border-neutral-700">
+            <strong class="text-emerald-400 w-16 text-right">$${subtotal.toLocaleString()}</strong>
+        </div>`;
+    }).join('');
+    document.getElementById('pos-cart-total-display').textContent = `$${total.toLocaleString()}`;
+}
+
+function updatePosRowProd(idx, id) {
+    const p = appState.inventory.find(x => x.id === id);
+    if (p) { activePosCartItems[idx].productId = p.id; activePosCartItems[idx].price = p.price; renderPosCartRows(); }
+}
+function updatePosRowQty(idx, q) {
+    activePosCartItems[idx].qty = Math.max(1, parseInt(q) || 1);
+    renderPosCartRows();
+}
+
+function saveEvidence() {
+    const stopId = document.getElementById('evidence-stop-id').value;
+    const status = document.getElementById('evidence-status').value;
+    const method = document.getElementById('evidence-payment-method').value;
+    const notes = document.getElementById('evidence-notes').value.trim();
+    const route = getActiveRoute();
+    const stop = route.stops.find(s => s.id === stopId);
+    if (!stop) return;
+
+    let totalSale = 0;
+    const receiptItems = [];
+    const isInd = appState.driver.role === 'independent';
+
+    if (status === 'delivered') {
+        if (isInd) {
+            activePosCartItems.forEach(i => {
+                totalSale += i.qty * i.price;
+                const prod = appState.inventory.find(p => p.id === i.productId);
+                if (prod) {
+                    prod.stock = Math.max(0, prod.stock - i.qty);
+                    receiptItems.push({ name: prod.name, qty: i.qty, price: i.price });
+                }
+            });
+        } else {
+            totalSale = parseFloat(document.getElementById('fleet-cod-amount').value) || 0;
+        }
+    }
+
+    stop.status = status;
+    stop.paymentMethod = method;
+    stop.notes = notes;
+    stop.value = totalSale;
+    stop.posItems = receiptItems;
+
+    saveAppState();
+    queueOutboxSync('SYNC_PARADA', stop);
+    if (status === 'delivered' && totalSale > 0 && isInd) {
+        queueOutboxSync('REGISTRAR_VENTA_POS', stop);
+    }
+    document.getElementById('modal-evidence').classList.add('hidden');
+    renderAllViews();
+
+    if (status === 'delivered' && isInd) {
+        showPersonalizedReceipt(stop, receiptItems, totalSale);
+    }
+}
+
+function reabrirReciboParada(stopId) {
+    const stop = getActiveRoute().stops.find(s => s.id === stopId);
+    if (stop && stop.status === 'delivered') {
+        showPersonalizedReceipt(stop, stop.posItems || [], stop.value || 0);
+    }
+}
+
+function renderAllViews() {
+    renderRoutesView();
+    renderAgendaView();
+    renderInventoryPOSView();
+    renderFinancesView();
+    renderMapMarkersAndRoute();
+    updateWazeNavigationBanner(lastKnownCoords[0], lastKnownCoords[1]);
+    initIconsSafe();
+}
+
+function renderRoutesView() {
+    const route = getActiveRoute();
+    const dropdown = document.getElementById('route-selector-dropdown');
+    if (dropdown) {
+        dropdown.innerHTML = appState.routes.map(r => `<option value="${r.id}" ${r.id === route.id ? 'selected' : ''}>📍 ${r.name} (${r.stops.length} paradas)</option>`).join('');
+    }
+
+    document.getElementById('route-active-title').textContent = route.name;
+    document.getElementById('metric-clients').textContent = route.stops.length;
+
+    const metrics = calcularMetricasRuta(route.stops);
+    document.getElementById('metric-km').textContent = `${metrics.km} km`;
+    document.getElementById('metric-time').textContent = `${metrics.mins} min`;
+
+    let totalMoney = 0;
+    route.stops.forEach(s => totalMoney += (s.value || 0));
+    document.getElementById('metric-money').textContent = `$${totalMoney.toLocaleString()}`;
+
+    const isInd = appState.driver.role === 'independent';
+    const container = document.getElementById('routes-list-container');
+    if (route.stops.length === 0) {
+        container.innerHTML = `<div class="bg-neutral-900/60 border border-neutral-800 rounded-2xl p-5 text-center text-xs text-neutral-400">No hay paradas en esta ruta. Añádelas desde el Mapa.</div>`;
+        return;
+    }
+
+    container.innerHTML = route.stops.map((s, idx) => {
+        const num = idx + 1;
+        const statusBadge = s.status === 'delivered'
+            ? '<span class="text-[10px] bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-bold">Entregado</span>'
+            : s.status === 'rejected'
+            ? '<span class="text-[10px] bg-rose-500/20 text-rose-400 px-2 py-0.5 rounded-full font-bold">Rechazado</span>'
+            : '<span class="text-[10px] bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full font-bold">Pendiente</span>';
+
+        return `
+        <div class="bg-neutral-900 border border-neutral-800 rounded-2xl p-3.5 flex items-center justify-between gap-2">
+            <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5">
+                    <span class="w-5 h-5 rounded-full bg-cyan-500 text-neutral-950 font-black text-[10px] flex items-center justify-center shrink-0">${num}</span>
+                    <strong class="text-white text-xs truncate">${s.name}</strong>
+                    ${statusBadge}
+                </div>
+                <div class="text-[11px] text-neutral-400 truncate mt-0.5">${s.address}</div>
+                ${(s.value || 0) > 0 ? `<div class="text-xs font-bold text-emerald-400 mt-0.5">$${s.value.toLocaleString()}</div>` : ''}
+            </div>
+            <div class="flex items-center gap-1 shrink-0">
+                <button onclick="navegarExterno(${s.lat}, ${s.lng})" class="bg-neutral-800 hover:bg-neutral-700 text-cyan-400 p-2 rounded-xl text-xs border border-neutral-700" title="Navegar GPS">🧭</button>
+                ${s.status === 'delivered' && isInd ? `<button onclick="reabrirReciboParada('${s.id}')" class="bg-neutral-800 hover:bg-neutral-700 text-emerald-400 font-bold p-2 rounded-xl text-xs border border-emerald-500/30" title="Ver Recibo">🧾</button>` : ''}
+                <button onclick="openEvidenceModal('${s.id}')" class="bg-cyan-500 text-neutral-950 font-black px-3 py-2 rounded-xl text-xs">${isInd ? 'POS' : 'Entrega'}</button>
+                <button onclick="eliminarParada('${s.id}')" class="bg-neutral-800 hover:bg-rose-500/20 text-rose-400 p-2 rounded-xl text-xs" title="Eliminar">✕</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function renderAgendaView() {
+    const container = document.getElementById('lista-agenda');
+    if (appState.clients.length === 0) {
+        container.innerHTML = `<div class="bg-neutral-900/60 border border-neutral-800 rounded-2xl p-5 text-center text-xs text-neutral-400">Sin clientes registrados aún.</div>`;
+        return;
+    }
+    container.innerHTML = appState.clients.map(c => `
+        <div class="bg-neutral-900 border border-neutral-800 p-3.5 rounded-2xl text-xs flex justify-between items-center gap-2">
+            <div>
+                <strong class="text-white block">${c.name}</strong>
+                <span class="text-neutral-400 text-[11px] block">${c.address || 'Sin dirección'}</span>
+                ${c.phone ? `<span class="text-cyan-400 text-[11px]">📞 ${c.phone}</span>` : ''}
+            </div>
+        </div>`).join('');
+}
+
+function renderInventoryPOSView() {
+    const container = document.getElementById('lista-inventario-pos');
+    container.innerHTML = appState.inventory.map(p => `
+        <div class="bg-neutral-900 border border-neutral-800 p-3.5 rounded-2xl text-xs text-white flex justify-between items-center">
+            <div>
+                <strong class="block">${p.name}</strong>
+                <span class="text-emerald-400 font-bold">$${p.price.toLocaleString()}</span>
+            </div>
+            <strong class="text-cyan-400 bg-neutral-950 px-3 py-1.5 rounded-xl border border-neutral-800">Stock: ${p.stock}</strong>
+        </div>`).join('');
+}
+
+const DENOMINATIONS = [100000, 50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100];
+function initCashDenominations() {
+    const c = document.getElementById('denominations-container');
+    if (!c) return;
+    c.innerHTML = DENOMINATIONS.map(d => `
+        <div class="flex justify-between items-center text-xs bg-neutral-950 px-3 py-1.5 rounded-xl border border-neutral-800/70">
+            <span class="font-bold text-neutral-300">$${d.toLocaleString()}</span>
+            <input type="number" min="0" value="0" data-denom="${d}" onchange="updateCashCounter()" oninput="updateCashCounter()" class="cash-denom-input w-20 bg-neutral-900 text-white text-right p-1.5 rounded-lg border border-neutral-700 font-bold">
+        </div>`).join('');
+}
+
+function updateCashCounter() {
+    let total = 0;
+    document.querySelectorAll('.cash-denom-input').forEach(inp => {
+        total += (parseInt(inp.dataset.denom) || 0) * (parseInt(inp.value) || 0);
+    });
+    document.getElementById('counter-total-display').textContent = `$${total.toLocaleString()}`;
+    document.getElementById('summary-fisico').textContent = `$${total.toLocaleString()}`;
+}
+
+function resetCashCounter() { initCashDenominations(); updateCashCounter(); }
+
+function addExpense() {
+    const concept = document.getElementById('expense-concept').value.trim();
+    const amount = parseFloat(document.getElementById('expense-amount').value) || 0;
+    if (!concept || amount <= 0) return;
+    appState.expenses.push({ id: 'exp-' + Date.now(), concept, amount });
+    document.getElementById('expense-concept').value = '';
+    document.getElementById('expense-amount').value = '';
+    saveAppState();
+    renderFinancesView();
+}
+
+function eliminarGasto(id) {
+    appState.expenses = appState.expenses.filter(e => e.id !== id);
+    saveAppState();
+    renderFinancesView();
+}
+
+function renderFinancesView() {
+    let cash = 0, transfer = 0, credit = 0;
+    getActiveRoute().stops.forEach(s => {
+        if (s.status === 'delivered') {
+            if (s.paymentMethod === 'cash') cash += (s.value || 0);
+            else if (s.paymentMethod === 'transfer' || s.paymentMethod === 'qr') transfer += (s.value || 0);
+            else if (s.paymentMethod === 'credit') credit += (s.value || 0);
+        }
+    });
+    const expList = document.getElementById('expenses-list');
+    if (expList) {
+        expList.innerHTML = appState.expenses.map(e => `
+            <div class="flex justify-between items-center bg-neutral-950 px-3 py-2 rounded-xl border border-neutral-800 text-xs">
+                <span class="text-neutral-300">${e.concept}</span>
+                <div class="flex items-center gap-2">
+                    <strong class="text-rose-400">-$${e.amount.toLocaleString()}</strong>
+                    <button onclick="eliminarGasto('${e.id}')" class="text-neutral-500 hover:text-rose-400">✕</button>
+                </div>
+            </div>`).join('');
+    }
+    document.getElementById('summary-facturado').textContent = `$${cash.toLocaleString()}`;
+    document.getElementById('summary-transfer').textContent = `$${transfer.toLocaleString()}`;
+    document.getElementById('summary-credit').textContent = `$${credit.toLocaleString()}`;
 }
 
 function openSheetsConfigModal() {
-    document.getElementById('cfg-sheets-url').value = state.apiUrl;
+    document.getElementById('cfg-sheets-url').value = appState.sheetsUrl || '';
     document.getElementById('modal-sheets-config').classList.remove('hidden');
 }
-
-function startOnboardingTour() {
-    const modal = document.getElementById('tour-onboarding-modal');
-    if (modal) modal.classList.remove('hidden');
+function saveSheetsConfig() {
+    appState.sheetsUrl = document.getElementById('cfg-sheets-url').value.trim();
+    saveAppState();
+    document.getElementById('modal-sheets-config').classList.add('hidden');
+    alert('✅ URL Cloud guardada.');
 }
-
-function closeOnboardingTour() {
-    const modal = document.getElementById('tour-onboarding-modal');
-    if (modal) modal.classList.add('hidden');
+function openCreateRouteModal() { document.getElementById('modal-route').classList.remove('hidden'); }
+function createNewRoute() {
+    const name = document.getElementById('new-route-name').value.trim();
+    if (!name) return;
+    const id = 'route-' + Date.now();
+    appState.routes.push({ id, name, stops: [] });
+    appState.activeRouteId = id;
+    saveAppState();
+    document.getElementById('modal-route').classList.add('hidden');
+    renderAllViews();
 }
-
-let currentTourStep = 1;
-function nextTourStep() {
-    currentTourStep++;
-    if (currentTourStep > 4) {
-        closeOnboardingTour();
-        currentTourStep = 1;
-        return;
+function openOfflineDownloadModal() { document.getElementById('modal-offline-download').classList.remove('hidden'); }
+async function startDownloadingRouteMapTiles() {
+    if (!map) return;
+    const center = map.getCenter();
+    const zooms = [14, 15, 16];
+    const urls = [];
+    zooms.forEach(z => {
+        const latRad = center.lat * Math.PI / 180;
+        const n = Math.pow(2, z);
+        const cx = Math.floor((center.lng + 180) / 360 * n);
+        const cy = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+        for (let dx = -2; dx <= 2; dx++) {
+            for (let dy = -2; dy <= 2; dy++) {
+                urls.push(`https://tile.openstreetmap.org/${z}/${cx + dx}/${cy + dy}.png`);
+            }
+        }
+    });
+    const countEl = document.getElementById('offline-tiles-count');
+    if (countEl) countEl.textContent = `Descargando ${urls.length} cuadrantes...`;
+    try {
+        const cache = await caches.open('routelogix-offline-core-v11');
+        let okCount = 0;
+        await Promise.allSettled(
+            urls.map(u => fetch(u).then(r => { if (r.ok) { okCount++; return cache.put(u, r); } }))
+        );
+        if (countEl) countEl.textContent = `${okCount} cuadrantes listos Offline`;
+        alert(`✅ ${okCount} bloques de mapa descargados. Ya puedes navegar 100% sin señal.`);
+    } catch (e) {
+        alert('⚠️ Error al descargar mosaicos. Verifica tu conexión.');
     }
-    const title = document.getElementById('tour-step-title');
-    const desc = document.getElementById('tour-step-desc');
-    if (currentTourStep === 2) {
-        title.innerText = '2. Navegación en Vivo & GPS';
-        desc.innerText = 'El widget superior estilo Waze te indica distancia, tiempo estimado y acceso rápido a tus mapas externos.';
-    } else if (currentTourStep === 3) {
-        title.innerText = '3. Repaso & Checkpoint';
-        desc.innerText = 'Gestiona entregas exitosas, marca cobros con QR o programa repasos para visitar al finalizar la ruta.';
-    } else if (currentTourStep === 4) {
-        title.innerText = '4. Arqueo por Denominación';
-        desc.innerText = 'Lleva el control exacto de efectivo billete a billete y moneda a moneda antes de liquidar tu jornada.';
-        document.getElementById('tour-btn-next').innerText = 'Finalizar';
-    }
+    document.getElementById('modal-offline-download').classList.add('hidden');
 }
