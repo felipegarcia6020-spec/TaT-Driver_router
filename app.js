@@ -86,11 +86,7 @@ function optimizeNearest() {
 }
 
 function checkpointAudit(id) {
-    const res = prompt('Resultado de Entrega:
-1 = Recibido y Pagado Efectivo
-2 = Recibido y Pagado Transferencia
-3 = Crédito / Cartera
-4 = Novedad / No Recibido', '1');
+    const res = prompt('Auditoría de Entrega:\n1 = Recibido y Pagado Efectivo\n2 = Recibido y Pagado Transferencia\n3 = Crédito / Cartera\n4 = Novedad / No Recibido', '1');
     if (!res) return;
     const st = STOPS.find(s => s.id === id);
     if (st) {
